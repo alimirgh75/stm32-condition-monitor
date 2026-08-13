@@ -22,6 +22,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stdbool.h"
+#include <stdio.h>
+#include "ism330dhcx.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,6 +40,9 @@
 
 /* USER CODE BEGIN PM */
 #define LED_DELAY_MS					   500U
+
+
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -54,9 +59,16 @@ static volatile uint32_t timer_event_count=0U;
 
 static volatile bool button_pressed_event = false;
 static bool blinking_enabled = true;
-
 static uint32_t last_button_tick = 0U;
 static const uint32_t debounce_time_ms = 40U;
+
+
+//Motion sensor
+static ism330dhcx_t motion_sensor;
+static uint8_t motion_sensor_id = 0U;
+static ism330dhcx_status_t motion_sensor_status;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -163,6 +175,27 @@ int main(void)
             ++blink_count;
         }
 
+    }
+
+    // Driver init
+    motion_sensor_status = ism330dhcx_init(
+        &motion_sensor,
+        &hi2c1,
+        ISM330DHCX_I2C_ADDRESS_7BIT,
+        10U);
+
+    if (motion_sensor_status == ISM330DHCX_OK)
+    {
+        motion_sensor_status = ism330dhcx_read_device_id(
+            &motion_sensor,
+            &motion_sensor_id);
+    }
+    //Print data from sensor
+    if(motion_sensor_status == ISM330DHCX_OK)
+    {
+    	printf("Sensor status: %d, ID: 0x%02X\r\n",
+    		       (int)motion_sensor_status,
+    		       (unsigned int)motion_sensor_id);
     }
 
   }
@@ -400,6 +433,22 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 		}
 
 	}
+}
+
+//Printf
+int _write(int file, char *data, int length)
+{
+    (void)file;
+
+    if (HAL_UART_Transmit(&huart2,
+                          (uint8_t *)data,
+                          (uint16_t)length,
+                          100U) == HAL_OK)
+    {
+        return length;
+    }
+
+    return -1;
 }
 
 /* USER CODE END 4 */
