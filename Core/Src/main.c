@@ -65,8 +65,7 @@ static const uint32_t debounce_time_ms = 40U;
 
 //Motion sensor
 static ism330dhcx_t motion_sensor;
-static uint8_t motion_sensor_id = 0U;
-static ism330dhcx_status_t motion_sensor_status;
+
 
 
 /* USER CODE END PV */
@@ -120,7 +119,71 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  //ISM330DHCX sensor
+  ism330dhcx_status_t sensor_status;
+  uint8_t device_id = 0U;
 
+  const ism330dhcx_interface_config_t interface_config =
+  {
+		  .auto_increment = true,
+		  .block_data_update = true
+  };
+
+
+  /* Step 1: Initialize the driver object. */
+  sensor_status = ism330dhcx_init(
+      &motion_sensor,
+      &hi2c1,
+	  ISM330DHCX_I2C_ADDRESS_7BIT,
+      100U);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 2: Confirm that the sensor responds. */
+  sensor_status = ism330dhcx_read_device_id(
+      &motion_sensor,
+      &device_id);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 3: Reset the sensor and wait for completion. */
+  sensor_status = ism330dhcx_reset(&motion_sensor);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+  /* Step 4: Confirm that the sensor still responds after reset. */
+  device_id = 0U;
+
+  sensor_status = ism330dhcx_read_device_id(
+      &motion_sensor,
+      &device_id);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 5: Apply the interface configuration. */
+  sensor_status = ism330dhcx_configure_interface(
+      &motion_sensor,
+      &interface_config);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+
+
+  //Blink
   uint32_t processed_timer_event_count=0U;
   uint32_t blink_count = 0;
 
@@ -177,26 +240,6 @@ int main(void)
 
     }
 
-    // Driver init
-    motion_sensor_status = ism330dhcx_init(
-        &motion_sensor,
-        &hi2c1,
-        ISM330DHCX_I2C_ADDRESS_7BIT,
-        10U);
-
-    if (motion_sensor_status == ISM330DHCX_OK)
-    {
-        motion_sensor_status = ism330dhcx_read_device_id(
-            &motion_sensor,
-            &motion_sensor_id);
-    }
-    //Print data from sensor
-    if(motion_sensor_status == ISM330DHCX_OK)
-    {
-    	printf("Sensor status: %d, ID: 0x%02X\r\n",
-    		       (int)motion_sensor_status,
-    		       (unsigned int)motion_sensor_id);
-    }
 
   }
   /* USER CODE END 3 */

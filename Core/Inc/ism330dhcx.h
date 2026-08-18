@@ -10,6 +10,7 @@
 #define ISM330DHCX_H
 
 #include "stm32l4xx_hal.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 //Motion sensor
@@ -21,13 +22,14 @@
 
 
 
+
 typedef enum
 {
-	ISM330DHCX_OK =0,
-	ISM330DHCX_ERROR,
-	ISM330DHCX_INVALID_ARGUMENT,
-	ISM330DHCX_WRONG_DEVICE
-
+    ISM330DHCX_OK = 0,
+    ISM330DHCX_ERROR,
+    ISM330DHCX_INVALID_ARGUMENT,
+    ISM330DHCX_WRONG_DEVICE,
+    ISM330DHCX_TIMEOUT
 } ism330dhcx_status_t;
 
 
@@ -39,6 +41,12 @@ typedef struct
 
 }ism330dhcx_t;
 
+typedef struct
+{
+    bool block_data_update;
+    bool auto_increment;
+} ism330dhcx_interface_config_t;
+
 ism330dhcx_status_t ism330dhcx_init(
 		ism330dhcx_t *device,
 		I2C_HandleTypeDef *i2c,
@@ -48,6 +56,17 @@ ism330dhcx_status_t ism330dhcx_init(
 ism330dhcx_status_t ism330dhcx_read_device_id(
 		const ism330dhcx_t *device,
 		uint8_t *device_id);
+
+
+
+/*Set the SW_RESET bit in CTRL3_C.
+Check until the sensor clears the bit.
+Have a finite timeout.
+Return a timeout/error instead of hanging.
+Not use HAL_Delay().*/
+ism330dhcx_status_t ism330dhcx_reset(const ism330dhcx_t *device);
+
+ism330dhcx_status_t ism330dhcx_configure_interface(const ism330dhcx_t *device, const ism330dhcx_interface_config_t *config);
 
 #endif
 
