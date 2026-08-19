@@ -129,6 +129,16 @@ int main(void)
 		  .block_data_update = true
   };
 
+  const ism330dhcx_sensor_config_t sensor_config =
+  {
+		  .accel_odr = ISM330DHCX_ACCEL_ODR_104_HZ,
+		  .accel_range = ISM330DHCX_ACCEL_RANGE_4G,
+		  .accel_mode  = ISM330DHCX_MODE_HIGH_PERFORMANCE,
+
+		  .gyro_odr = ISM330DHCX_GYRO_ODR_104_HZ,
+		  .gyro_range = ISM330DHCX_GYRO_500_DPS,
+		  .gyro_mode   = ISM330DHCX_MODE_HIGH_PERFORMANCE
+  };
 
   /* Step 1: Initialize the driver object. */
   sensor_status = ism330dhcx_init(
@@ -181,7 +191,16 @@ int main(void)
       Error_Handler();
   }
 
+  /* Step 6: Apply the sensor configuration. */
 
+  sensor_status = ism330dhcx_configure_sensor(
+      &motion_sensor,
+      &sensor_config);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
 
   //Blink
   uint32_t processed_timer_event_count=0U;

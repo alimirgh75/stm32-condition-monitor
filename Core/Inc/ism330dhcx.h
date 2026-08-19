@@ -21,7 +21,65 @@
 #define ISM330DHCX_WHO_AM_I_VALUE   0x6BU
 
 
+//Create four public enum types:
 
+typedef enum
+{
+    ISM330DHCX_ACCEL_ODR_PWR_DOWN = 0,
+	ISM330DHCX_ACCEL_ODR_12_5_HZ,
+	ISM330DHCX_ACCEL_ODR_26_HZ,
+	ISM330DHCX_ACCEL_ODR_52_HZ,
+	ISM330DHCX_ACCEL_ODR_104_HZ,
+	ISM330DHCX_ACCEL_ODR_208_HZ,
+	ISM330DHCX_ACCEL_ODR_416_HZ,
+	ISM330DHCX_ACCEL_ODR_833_HZ,
+	ISM330DHCX_ACCEL_ODR_1660_HZ,
+	ISM330DHCX_ACCEL_ODR_3330_HZ,
+	ISM330DHCX_ACCEL_ODR_6660_HZ,
+
+	ISM330DHCX_ACCEL_ODR_COUNT
+} ism330dhcx_accel_odr_t;
+
+typedef enum
+{
+	ISM330DHCX_ACCEL_RANGE_2G = 0,
+	ISM330DHCX_ACCEL_RANGE_16G,
+	ISM330DHCX_ACCEL_RANGE_4G,
+	ISM330DHCX_ACCEL_RANGE_8G,
+
+
+	ISM330DHCX_ACCEL_RANGE_COUNT
+} ism330dhcx_accel_range_t;
+
+
+typedef enum
+{
+    ISM330DHCX_GYRO_ODR_PWR_DOWN = 0,
+	ISM330DHCX_GYRO_ODR_12_5_HZ,
+	ISM330DHCX_GYRO_ODR_26_HZ,
+	ISM330DHCX_GYRO_ODR_52_HZ,
+	ISM330DHCX_GYRO_ODR_104_HZ,
+	ISM330DHCX_GYRO_ODR_208_HZ,
+	ISM330DHCX_GYRO_ODR_416_HZ,
+	ISM330DHCX_GYRO_ODR_833_HZ,
+	ISM330DHCX_GYRO_ODR_1660_HZ,
+	ISM330DHCX_GYRO_ODR_3330_HZ,
+	ISM330DHCX_GYRO_ODR_6660_HZ,
+
+	ISM330DHCX_GYRO_ODR_COUNT
+} ism330dhcx_gyro_odr_t;
+
+typedef enum
+{
+    ISM330DHCX_GYRO_125_DPS = 0,
+    ISM330DHCX_GYRO_250_DPS,
+    ISM330DHCX_GYRO_500_DPS,
+    ISM330DHCX_GYRO_1000_DPS,
+    ISM330DHCX_GYRO_2000_DPS,
+    ISM330DHCX_GYRO_4000_DPS,
+
+    ISM330DHCX_GYRO_DPS_COUNT
+} ism330dhcx_gyro_range_t;
 
 typedef enum
 {
@@ -32,6 +90,26 @@ typedef enum
     ISM330DHCX_TIMEOUT
 } ism330dhcx_status_t;
 
+typedef enum
+{
+    ISM330DHCX_MODE_HIGH_PERFORMANCE = 0,
+    ISM330DHCX_MODE_LOW_POWER_NORMAL,
+
+    ISM330DHCX_MODE_COUNT
+} ism330dhcx_performance_mode_t;
+
+typedef struct
+{
+    ism330dhcx_accel_odr_t accel_odr;
+    ism330dhcx_accel_range_t accel_range;
+    ism330dhcx_performance_mode_t accel_mode;
+
+    ism330dhcx_gyro_odr_t gyro_odr;
+    ism330dhcx_gyro_range_t gyro_range;
+    ism330dhcx_performance_mode_t gyro_mode;
+
+
+} ism330dhcx_sensor_config_t;
 
 typedef struct
 {
@@ -67,6 +145,9 @@ Not use HAL_Delay().*/
 ism330dhcx_status_t ism330dhcx_reset(const ism330dhcx_t *device);
 
 ism330dhcx_status_t ism330dhcx_configure_interface(const ism330dhcx_t *device, const ism330dhcx_interface_config_t *config);
+
+
+ism330dhcx_status_t ism330dhcx_configure_sensor(const ism330dhcx_t *device, const ism330dhcx_sensor_config_t *config);
 
 #endif
 
