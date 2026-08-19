@@ -59,6 +59,9 @@ static ism330dhcx_status_t ism330dhcx_encode_performance_mode(
     uint8_t *register_value);
 
 
+static int16_t ism330dhcx_decode_int16_le(
+    const uint8_t *bytes);
+
 static const uint8_t accel_odr_register_values
     [ISM330DHCX_ACCEL_ODR_COUNT] =
 {
@@ -132,9 +135,6 @@ ism330dhcx_status_t ism330dhcx_init(
 
 	return ISM330DHCX_OK;
 }
-
-
-
 
 
 ism330dhcx_status_t ism330dhcx_read_device_id(
@@ -365,6 +365,42 @@ ism330dhcx_status_t ism330dhcx_configure_sensor(const ism330dhcx_t *device, cons
 
 
 
+ism330dhcx_status_t ism330dhcx_read_raw_sample(
+    const ism330dhcx_t *device,
+    ism330dhcx_raw_sample_t *sample)
+{
+    if ((device == NULL) || (sample == NULL))
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+	uint8_t raw_data[ISM330DHCX_SAMPLE_BYTE_COUNT] = {0U};
+
+	ism330dhcx_status_t read_data_status =  ism330dhcx_read_register(
+	    device,
+		ISM330DHCX_REG_OUTX_L_G,
+		raw_data,
+		(uint16_t)sizeof(raw_data));
+
+	if(read_data_status != ISM330DHCX_OK)
+	{
+		 return read_data_status;
+	}
+
+	sample->gyro.x = ism330dhcx_decode_int16_le(&raw_data[0]);
+	sample->gyro.y = ism330dhcx_decode_int16_le(&raw_data[2]);
+	sample->gyro.z = ism330dhcx_decode_int16_le(&raw_data[4]);
+
+	sample->accel.x = ism330dhcx_decode_int16_le(&raw_data[6]);
+	sample->accel.y = ism330dhcx_decode_int16_le(&raw_data[8]);
+	sample->accel.z = ism330dhcx_decode_int16_le(&raw_data[10]);
+
+
+	return ISM330DHCX_OK;
+
+}
+
+
 //Private functions
 static ism330dhcx_status_t ism330dhcx_read_register(
     const ism330dhcx_t *device,
@@ -564,4 +600,10 @@ static ism330dhcx_status_t ism330dhcx_encode_performance_mode(
     return ISM330DHCX_OK;
 }
 
-
+static int16_t ism330dhcx_decode_int16_le(
+    const uint8_t *bytes)
+{
+    return (int16_t)(
+        (uint16_t)bytes[0] |
+        ((uint16_t)bytes[1] << 8U));
+}

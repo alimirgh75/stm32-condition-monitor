@@ -125,6 +125,24 @@ typedef struct
     bool auto_increment;
 } ism330dhcx_interface_config_t;
 
+
+typedef struct
+{
+	int16_t x;
+	int16_t y;
+	int16_t z;
+}ism330dhcx_raw_axes_t;
+
+typedef struct
+{
+    ism330dhcx_raw_axes_t gyro;
+    ism330dhcx_raw_axes_t accel;
+} ism330dhcx_raw_sample_t;
+
+ism330dhcx_status_t ism330dhcx_read_raw_sample(
+    const ism330dhcx_t *device,
+    ism330dhcx_raw_sample_t *sample);
+
 ism330dhcx_status_t ism330dhcx_init(
 		ism330dhcx_t *device,
 		I2C_HandleTypeDef *i2c,

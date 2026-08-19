@@ -65,7 +65,7 @@ static const uint32_t debounce_time_ms = 40U;
 
 //Motion sensor
 static ism330dhcx_t motion_sensor;
-
+static ism330dhcx_raw_sample_t raw_sample;
 
 
 /* USER CODE END PV */
@@ -246,19 +246,41 @@ int main(void)
     	}
     }
 
-    // Uses the counter to toggle the led if the blinking is enabled
     if (processed_timer_event_count != produced_timer_events)
     {
         ++processed_timer_event_count;
 
-        if(blinking_enabled)
+        const ism330dhcx_status_t sample_status =
+            ism330dhcx_read_raw_sample(
+                &motion_sensor,
+                &raw_sample);
+
+        if (sample_status != ISM330DHCX_OK)
         {
-            HAL_GPIO_TogglePin(LED2_GPIO_PORT, LED2_PIN);
-            ++blink_count;
+            Error_Handler();
         }
 
+        if (blinking_enabled)
+        {
+            HAL_GPIO_TogglePin(
+                LED2_GPIO_PORT,
+                LED2_PIN);
+
+            ++blink_count;
+        }
     }
 
+
+    //Printf
+    printf(
+        "ACC raw: X=%d Y=%d Z=%d | "
+        "GYRO raw: X=%d Y=%d Z=%d\r\n",
+        (int)raw_sample.accel.x,
+        (int)raw_sample.accel.y,
+        (int)raw_sample.accel.z,
+        (int)raw_sample.gyro.x,
+        (int)raw_sample.gyro.y,
+        (int)raw_sample.gyro.z);
 
   }
   /* USER CODE END 3 */
