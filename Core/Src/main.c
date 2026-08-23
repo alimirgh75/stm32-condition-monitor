@@ -145,7 +145,7 @@ int main(void)
   sensor_status = ism330dhcx_init(
       &motion_sensor,
       &hi2c1,
-	  ISM330DHCX_I2C_ADDRESS_7BIT,
+	  ISM330DHCX_I2C_ADDRESS_HIGH_7BIT,
       100U);
 
   if (sensor_status != ISM330DHCX_OK)

@@ -67,8 +67,8 @@ static int16_t ism330dhcx_decode_int16_le(
 
 static void ism330dhcx_convert_raw(
     const ism330dhcx_raw_sample_t *raw_sample,
-    float accel_scale_mg_per_lsb,
-    float gyro_scale_mdps_per_lsb,
+    float accel_scale_g_per_lsb,
+    float gyro_scale_dps_per_lsb,
     ism330dhcx_sample_t *sample);
 
 static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
@@ -159,7 +159,11 @@ ism330dhcx_status_t ism330dhcx_init(
     uint8_t address_7bit,
     uint32_t timeout_ms)
 {
-	if((device == NULL) || (i2c == NULL)){
+	if((device == NULL) ||
+		    (i2c == NULL) ||
+		    ((address_7bit != ISM330DHCX_I2C_ADDRESS_LOW_7BIT) &&
+		     (address_7bit != ISM330DHCX_I2C_ADDRESS_HIGH_7BIT)) ||
+		    (timeout_ms == 0U)){
 
 		return ISM330DHCX_INVALID_ARGUMENT;
 	}
@@ -207,6 +211,13 @@ ism330dhcx_status_t ism330dhcx_read_device_id(
 ism330dhcx_status_t ism330dhcx_reset(ism330dhcx_t *device)
 {
 
+    if ((device == NULL) || (device->i2c == NULL))
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+
+    device->sensor_configured = false;
 
 	const uint8_t req_val = ISM330DHCX_CTRL3_C_RESET_MASK;
 
@@ -221,7 +232,6 @@ ism330dhcx_status_t ism330dhcx_reset(ism330dhcx_t *device)
 	    return status;
 	}
 
-	device->sensor_configured = false;
 
 	const uint32_t start_time_ms = HAL_GetTick();
 
@@ -372,6 +382,7 @@ ism330dhcx_status_t ism330dhcx_configure_sensor(ism330dhcx_t *device, const ism3
 	}
 
 	//Update bits
+	device->sensor_configured = false;
 
 	const ism330dhcx_status_t accel_perf_status = ism330dhcx_update_bits(
 		    device,
@@ -490,18 +501,18 @@ ism330dhcx_status_t ism330dhcx_convert_raw_sample(
         return ISM330DHCX_INVALID_ARGUMENT;
     }
 
-    const float accel_scale_mg_per_lsb =
+    const float accel_scale_g_per_lsb =
     		accel_sensitivity_g_per_lsb[
             device->sensor_config.accel_range];
 
-    const float gyro_scale_mdps_per_lsb =
+    const float gyro_scale_dps_per_lsb =
     		gyro_sensitivity_dps_per_lsb[
             device->sensor_config.gyro_range];
 
     ism330dhcx_convert_raw(
         raw_sample,
-        accel_scale_mg_per_lsb,
-        gyro_scale_mdps_per_lsb,
+        accel_scale_g_per_lsb,
+        gyro_scale_dps_per_lsb,
         sample);
 
     return ISM330DHCX_OK;
@@ -607,7 +618,7 @@ static ism330dhcx_status_t ism330dhcx_update_bits(
 	}
 
 
-    const uint8_t new_byte = (uint8_t) (old_byte & (uint8_t)~mask) | (req_data & mask) ;
+    const uint8_t new_byte = (uint8_t) ((old_byte & (uint8_t)~mask) | (req_data & mask)) ;
 
     /* Avoid an unnecessary I2C transaction. */
     if (new_byte == old_byte)
@@ -728,22 +739,22 @@ static int16_t ism330dhcx_decode_int16_le(
 
 static void ism330dhcx_convert_raw(
     const ism330dhcx_raw_sample_t *raw_sample,
-    float accel_scale_mg_per_lsb,
-    float gyro_scale_mdps_per_lsb,
+    float accel_scale_g_per_lsb,
+    float gyro_scale_dps_per_lsb,
     ism330dhcx_sample_t *sample)
 {
 
-	sample->acceleration_mps2.x = (float) raw_sample->accel.x * accel_scale_mg_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
+	sample->acceleration_mps2.x = (float) raw_sample->accel.x * accel_scale_g_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
 
-	sample->acceleration_mps2.y = (float) raw_sample->accel.y * accel_scale_mg_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
+	sample->acceleration_mps2.y = (float) raw_sample->accel.y * accel_scale_g_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
 
-	sample->acceleration_mps2.z = (float) raw_sample->accel.z * accel_scale_mg_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
+	sample->acceleration_mps2.z = (float) raw_sample->accel.z * accel_scale_g_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
 
-	sample->angular_rate_dps.x = (float) raw_sample->gyro.x * gyro_scale_mdps_per_lsb;
+	sample->angular_rate_dps.x = (float) raw_sample->gyro.x * gyro_scale_dps_per_lsb;
 
-	sample->angular_rate_dps.y = (float) raw_sample->gyro.y * gyro_scale_mdps_per_lsb;
+	sample->angular_rate_dps.y = (float) raw_sample->gyro.y * gyro_scale_dps_per_lsb;
 
-	sample->angular_rate_dps.z = (float) raw_sample->gyro.z * gyro_scale_mdps_per_lsb;
+	sample->angular_rate_dps.z = (float) raw_sample->gyro.z * gyro_scale_dps_per_lsb;
 }
 
 
@@ -755,17 +766,29 @@ static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
         return ISM330DHCX_INVALID_ARGUMENT;
     }
 
-    /* Validate the mode enum itself. */
-    if ((uint32_t)config->accel_mode >=
-        (uint32_t)ISM330DHCX_MODE_COUNT)
+    /* Validate the individual mode and range enum values. */
+    if (((uint32_t)config->accel_mode >=
+         (uint32_t)ISM330DHCX_MODE_COUNT) ||
+        ((uint32_t)config->gyro_mode >=
+         (uint32_t)ISM330DHCX_MODE_COUNT) ||
+        ((uint32_t)config->accel_range >=
+         (uint32_t)ISM330DHCX_ACCEL_RANGE_COUNT) ||
+        ((uint32_t)config->gyro_range >=
+         (uint32_t)ISM330DHCX_GYRO_DPS_COUNT))
     {
         return ISM330DHCX_INVALID_ARGUMENT;
     }
 
+    /*
+     * Accelerometer mode/ODR combinations.
+     *
+     * At 416 Hz and above, the device operates in high-performance
+     * mode even if XL_HM_MODE is set. Reject that combination because
+     * the requested low-power/normal mode cannot actually be provided.
+     */
     switch (config->accel_odr)
     {
         case ISM330DHCX_ACCEL_ODR_PWR_DOWN:
-            /* Performance mode is irrelevant when powered down. */
             break;
 
         case ISM330DHCX_ACCEL_ODR_1_6_HZ:
@@ -781,7 +804,6 @@ static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
         case ISM330DHCX_ACCEL_ODR_52_HZ:
         case ISM330DHCX_ACCEL_ODR_104_HZ:
         case ISM330DHCX_ACCEL_ODR_208_HZ:
-            /* Both performance-mode selections are valid. */
             break;
 
         case ISM330DHCX_ACCEL_ODR_416_HZ:
@@ -797,7 +819,39 @@ static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
             break;
 
         default:
-            /* This also rejects invalid and out-of-range enum values. */
+            return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+    /*
+     * Gyroscope mode/ODR combinations.
+     *
+     * Low-power is available at 12.5–52 Hz.
+     * Normal mode is available at 104–208 Hz.
+     * Higher ODRs operate in high-performance mode.
+     */
+    switch (config->gyro_odr)
+    {
+        case ISM330DHCX_GYRO_ODR_PWR_DOWN:
+        case ISM330DHCX_GYRO_ODR_12_5_HZ:
+        case ISM330DHCX_GYRO_ODR_26_HZ:
+        case ISM330DHCX_GYRO_ODR_52_HZ:
+        case ISM330DHCX_GYRO_ODR_104_HZ:
+        case ISM330DHCX_GYRO_ODR_208_HZ:
+            break;
+
+        case ISM330DHCX_GYRO_ODR_416_HZ:
+        case ISM330DHCX_GYRO_ODR_833_HZ:
+        case ISM330DHCX_GYRO_ODR_1660_HZ:
+        case ISM330DHCX_GYRO_ODR_3330_HZ:
+        case ISM330DHCX_GYRO_ODR_6660_HZ:
+            if (config->gyro_mode !=
+                ISM330DHCX_MODE_HIGH_PERFORMANCE)
+            {
+                return ISM330DHCX_INVALID_ARGUMENT;
+            }
+            break;
+
+        default:
             return ISM330DHCX_INVALID_ARGUMENT;
     }
 
