@@ -66,6 +66,8 @@ ST's driver remains the reference implementation for checking register values, s
 - More responsibility for datasheet validation
 - Custom code requires custom testing
 
+The direct STM32 HAL dependency makes the current implementation simple to integrate on the NUCLEO-L476RG, but it also couples the driver to that platform. If host-side unit testing or support for another MCU becomes important, the transport layer should be replaced with injected read, write, and delay callbacks similar to ST's platform-independent driver.
+
 ## Revisit Conditions
 
 Reconsider using ST's driver if the project requires:

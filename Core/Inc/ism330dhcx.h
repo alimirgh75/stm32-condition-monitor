@@ -19,7 +19,9 @@
 #define ISM330DHCX_I2C_ADDRESS_7BIT  0x6BU
 #define ISM330DHCX_EXPECTED_ID       0x6BU
 
-
+#define ISM330DHCX_I2C_ADDRESS_LOW_7BIT   0x6AU
+#define ISM330DHCX_I2C_ADDRESS_HIGH_7BIT  0x6BU
+#define ISM330DHCX_EXPECTED_ID            0x6BU
 
 //Create four public enum types:
 

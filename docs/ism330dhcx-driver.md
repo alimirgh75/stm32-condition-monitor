@@ -54,30 +54,6 @@ The STM32 HAL expects the 7-bit address shifted left by one.
 
 The I2C address and `WHO_AM_I` value are both `0x6B`, but they represent different properties.
 
-## Public Types
-
-### `ism330dhcx_t`
-
-Describe the I2C handle, shifted address, timeout, stored configuration and configuration-valid flag.
-
-### `ism330dhcx_sensor_config_t`
-
-Describe ODR, range and performance-mode fields.
-
-### `ism330dhcx_raw_sample_t`
-
-Contains signed 16-bit accelerometer and gyroscope register values.
-
-### `ism330dhcx_sample_t`
-
-Contains:
-
-- Acceleration in `m/s²`
-- Angular rate in `dps`
-
-### `ism330dhcx_status_t`
-
-Describe the meaning of every status value.
 
 ## Initialization Sequence
 
@@ -157,7 +133,7 @@ Angular rate:
 
 ## Verification
 
-Describe the board-level checks:
+The driver is verified on a NUCLEO-L476RG with an X-NUCLEO-IKS02A1 expansion board.
 
 - Correct `WHO_AM_I`
 - Reset completes before timeout
@@ -166,7 +142,5 @@ Describe the board-level checks:
 - Values respond correctly when the board is rotated
 
 ## References
-
-- ISM330DHCX datasheet, including revision
-- X-NUCLEO-IKS02A1 schematic
-- ST official component driver
+- ST ISM330DHCX component driver
+- ISM330DHCX datasheet
