@@ -14,16 +14,9 @@
 #include <stdint.h>
 
 //Motion sensor
-#define ISM330DHCX_ADDRESS_7BIT     0x6BU
-#define ISM330DHCX_ADDRESS_HAL      (ISM330DHCX_ADDRESS_7BIT << 1U)
-#define ISM330DHCX_I2C_ADDRESS_7BIT  0x6BU
-#define ISM330DHCX_EXPECTED_ID       0x6BU
-
 #define ISM330DHCX_I2C_ADDRESS_LOW_7BIT   0x6AU
 #define ISM330DHCX_I2C_ADDRESS_HIGH_7BIT  0x6BU
 #define ISM330DHCX_EXPECTED_ID            0x6BU
-
-//Create four public enum types:
 
 typedef enum
 {
