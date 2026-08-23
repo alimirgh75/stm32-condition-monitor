@@ -65,8 +65,8 @@ static const uint32_t debounce_time_ms = 40U;
 
 //Motion sensor
 static ism330dhcx_t motion_sensor;
-static uint8_t motion_sensor_id = 0U;
-static ism330dhcx_status_t motion_sensor_status;
+static ism330dhcx_raw_sample_t raw_sample;
+static ism330dhcx_sample_t converted_sample;
 
 
 /* USER CODE END PV */
@@ -120,7 +120,90 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  //ISM330DHCX sensor
+  ism330dhcx_status_t sensor_status;
+  uint8_t device_id = 0U;
 
+  const ism330dhcx_interface_config_t interface_config =
+  {
+		  .auto_increment = true,
+		  .block_data_update = true
+  };
+
+  const ism330dhcx_sensor_config_t sensor_config =
+  {
+		  .accel_odr = ISM330DHCX_ACCEL_ODR_104_HZ,
+		  .accel_range = ISM330DHCX_ACCEL_RANGE_4G,
+		  .accel_mode  = ISM330DHCX_MODE_HIGH_PERFORMANCE,
+
+		  .gyro_odr = ISM330DHCX_GYRO_ODR_104_HZ,
+		  .gyro_range = ISM330DHCX_GYRO_500_DPS,
+		  .gyro_mode   = ISM330DHCX_MODE_HIGH_PERFORMANCE
+  };
+
+  /* Step 1: Initialize the driver object. */
+  sensor_status = ism330dhcx_init(
+      &motion_sensor,
+      &hi2c1,
+	  ISM330DHCX_I2C_ADDRESS_HIGH_7BIT,
+      100U);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 2: Confirm that the sensor responds. */
+  sensor_status = ism330dhcx_read_device_id(
+      &motion_sensor,
+      &device_id);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 3: Reset the sensor and wait for completion. */
+  sensor_status = ism330dhcx_reset(&motion_sensor);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+  /* Step 4: Confirm that the sensor still responds after reset. */
+  device_id = 0U;
+
+  sensor_status = ism330dhcx_read_device_id(
+      &motion_sensor,
+      &device_id);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 5: Apply the interface configuration. */
+  sensor_status = ism330dhcx_configure_interface(
+      &motion_sensor,
+      &interface_config);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 6: Apply the sensor configuration. */
+
+  sensor_status = ism330dhcx_configure_sensor(
+      &motion_sensor,
+      &sensor_config);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  //Blink
   uint32_t processed_timer_event_count=0U;
   uint32_t blink_count = 0;
 
@@ -164,39 +247,63 @@ int main(void)
     	}
     }
 
-    // Uses the counter to toggle the led if the blinking is enabled
     if (processed_timer_event_count != produced_timer_events)
     {
         ++processed_timer_event_count;
 
-        if(blinking_enabled)
+        const ism330dhcx_status_t sample_status =
+            ism330dhcx_read_raw_sample(
+                &motion_sensor,
+                &raw_sample);
+
+        if (sample_status != ISM330DHCX_OK)
         {
-            HAL_GPIO_TogglePin(LED2_GPIO_PORT, LED2_PIN);
-            ++blink_count;
+            Error_Handler();
         }
 
+
+        const ism330dhcx_status_t conversion_status =
+            ism330dhcx_convert_raw_sample(
+                &motion_sensor,
+                &raw_sample,
+                &converted_sample);
+
+        if (conversion_status != ISM330DHCX_OK)
+        {
+            Error_Handler();
+        }
+
+        printf(
+            "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
+            "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
+            (double)converted_sample.acceleration_mps2.x,
+            (double)converted_sample.acceleration_mps2.y,
+            (double)converted_sample.acceleration_mps2.z,
+            (double)converted_sample.angular_rate_dps.x,
+            (double)converted_sample.angular_rate_dps.y,
+            (double)converted_sample.angular_rate_dps.z);
+
+        if (blinking_enabled)
+        {
+            HAL_GPIO_TogglePin(
+                LED2_GPIO_PORT,
+                LED2_PIN);
+
+            ++blink_count;
+        }
     }
 
-    // Driver init
-    motion_sensor_status = ism330dhcx_init(
-        &motion_sensor,
-        &hi2c1,
-        ISM330DHCX_I2C_ADDRESS_7BIT,
-        10U);
 
-    if (motion_sensor_status == ISM330DHCX_OK)
-    {
-        motion_sensor_status = ism330dhcx_read_device_id(
-            &motion_sensor,
-            &motion_sensor_id);
-    }
-    //Print data from sensor
-    if(motion_sensor_status == ISM330DHCX_OK)
-    {
-    	printf("Sensor status: %d, ID: 0x%02X\r\n",
-    		       (int)motion_sensor_status,
-    		       (unsigned int)motion_sensor_id);
-    }
+//    //Printf
+//    printf(
+//        "ACC raw: X=%d Y=%d Z=%d | "
+//        "GYRO raw: X=%d Y=%d Z=%d\r\n",
+//        (int)raw_sample.accel.x,
+//        (int)raw_sample.accel.y,
+//        (int)raw_sample.accel.z,
+//        (int)raw_sample.gyro.x,
+//        (int)raw_sample.gyro.y,
+//        (int)raw_sample.gyro.z);
 
   }
   /* USER CODE END 3 */
