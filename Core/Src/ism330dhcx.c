@@ -71,10 +71,14 @@ static void ism330dhcx_convert_raw(
     float gyro_scale_mdps_per_lsb,
     ism330dhcx_sample_t *sample);
 
+static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
+    const ism330dhcx_sensor_config_t *config);
+
 static const uint8_t accel_odr_register_values
     [ISM330DHCX_ACCEL_ODR_COUNT] =
 {
     [ISM330DHCX_ACCEL_ODR_PWR_DOWN]   = 0x00U,
+	[ISM330DHCX_ACCEL_ODR_1_6_HZ]     = 0xB0U,
     [ISM330DHCX_ACCEL_ODR_12_5_HZ]    = 0x10U,
     [ISM330DHCX_ACCEL_ODR_26_HZ]      = 0x20U,
     [ISM330DHCX_ACCEL_ODR_52_HZ]      = 0x30U,
@@ -288,6 +292,15 @@ ism330dhcx_status_t ism330dhcx_configure_sensor(ism330dhcx_t *device, const ism3
 	uint8_t gyro_odr = 0U;
 	uint8_t gyro_range = 0U;
 	uint8_t gyro_perfomance = 0U;
+
+
+	const ism330dhcx_status_t config_valid_status = ism330dhcx_validate_sensor_config(config);
+
+
+	if (config_valid_status != ISM330DHCX_OK)
+	{
+	    return config_valid_status;
+	}
 
 	//Accel config setting
 	ism330dhcx_status_t accel_odr_status = ism330dhcx_encode_accel_odr(
@@ -732,3 +745,63 @@ static void ism330dhcx_convert_raw(
 
 	sample->angular_rate_dps.z = (float) raw_sample->gyro.z * gyro_scale_mdps_per_lsb;
 }
+
+
+static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
+    const ism330dhcx_sensor_config_t *config)
+{
+    if (config == NULL)
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+    /* Validate the mode enum itself. */
+    if ((uint32_t)config->accel_mode >=
+        (uint32_t)ISM330DHCX_MODE_COUNT)
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+    switch (config->accel_odr)
+    {
+        case ISM330DHCX_ACCEL_ODR_PWR_DOWN:
+            /* Performance mode is irrelevant when powered down. */
+            break;
+
+        case ISM330DHCX_ACCEL_ODR_1_6_HZ:
+            if (config->accel_mode !=
+                ISM330DHCX_MODE_LOW_POWER_NORMAL)
+            {
+                return ISM330DHCX_INVALID_ARGUMENT;
+            }
+            break;
+
+        case ISM330DHCX_ACCEL_ODR_12_5_HZ:
+        case ISM330DHCX_ACCEL_ODR_26_HZ:
+        case ISM330DHCX_ACCEL_ODR_52_HZ:
+        case ISM330DHCX_ACCEL_ODR_104_HZ:
+        case ISM330DHCX_ACCEL_ODR_208_HZ:
+            /* Both performance-mode selections are valid. */
+            break;
+
+        case ISM330DHCX_ACCEL_ODR_416_HZ:
+        case ISM330DHCX_ACCEL_ODR_833_HZ:
+        case ISM330DHCX_ACCEL_ODR_1660_HZ:
+        case ISM330DHCX_ACCEL_ODR_3330_HZ:
+        case ISM330DHCX_ACCEL_ODR_6660_HZ:
+            if (config->accel_mode !=
+                ISM330DHCX_MODE_HIGH_PERFORMANCE)
+            {
+                return ISM330DHCX_INVALID_ARGUMENT;
+            }
+            break;
+
+        default:
+            /* This also rejects invalid and out-of-range enum values. */
+            return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+    return ISM330DHCX_OK;
+}
+
+
