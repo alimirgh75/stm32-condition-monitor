@@ -18,7 +18,7 @@
 #define ISM330DHCX_ADDRESS_HAL      (ISM330DHCX_ADDRESS_7BIT << 1U)
 #define ISM330DHCX_I2C_ADDRESS_7BIT  0x6BU
 #define ISM330DHCX_EXPECTED_ID       0x6BU
-#define ISM330DHCX_WHO_AM_I_VALUE   0x6BU
+
 
 
 //Create four public enum types:
@@ -87,7 +87,8 @@ typedef enum
     ISM330DHCX_ERROR,
     ISM330DHCX_INVALID_ARGUMENT,
     ISM330DHCX_WRONG_DEVICE,
-    ISM330DHCX_TIMEOUT
+    ISM330DHCX_TIMEOUT,
+	ISM330DHCX_NOT_CONFIGURED
 } ism330dhcx_status_t;
 
 typedef enum
@@ -117,6 +118,9 @@ typedef struct
 	uint16_t address;
 	uint32_t timeout_ms;
 
+    ism330dhcx_sensor_config_t sensor_config;
+    bool sensor_configured;
+
 }ism330dhcx_t;
 
 typedef struct
@@ -139,6 +143,20 @@ typedef struct
     ism330dhcx_raw_axes_t accel;
 } ism330dhcx_raw_sample_t;
 
+
+typedef struct
+{
+    float x;
+    float y;
+    float z;
+} ism330dhcx_axes_t;
+
+typedef struct
+{
+    ism330dhcx_axes_t acceleration_mps2;
+    ism330dhcx_axes_t angular_rate_dps;
+} ism330dhcx_sample_t;
+
 ism330dhcx_status_t ism330dhcx_read_raw_sample(
     const ism330dhcx_t *device,
     ism330dhcx_raw_sample_t *sample);
@@ -155,17 +173,25 @@ ism330dhcx_status_t ism330dhcx_read_device_id(
 
 
 
+
+
 /*Set the SW_RESET bit in CTRL3_C.
 Check until the sensor clears the bit.
 Have a finite timeout.
 Return a timeout/error instead of hanging.
 Not use HAL_Delay().*/
-ism330dhcx_status_t ism330dhcx_reset(const ism330dhcx_t *device);
+ism330dhcx_status_t ism330dhcx_reset(ism330dhcx_t *device);
 
 ism330dhcx_status_t ism330dhcx_configure_interface(const ism330dhcx_t *device, const ism330dhcx_interface_config_t *config);
 
 
-ism330dhcx_status_t ism330dhcx_configure_sensor(const ism330dhcx_t *device, const ism330dhcx_sensor_config_t *config);
+ism330dhcx_status_t ism330dhcx_configure_sensor(ism330dhcx_t *device, const ism330dhcx_sensor_config_t *config);
+
+
+ism330dhcx_status_t ism330dhcx_convert_raw_sample(
+    const ism330dhcx_t *device,
+    const ism330dhcx_raw_sample_t *raw_sample,
+    ism330dhcx_sample_t *sample);
 
 #endif
 

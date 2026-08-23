@@ -7,7 +7,9 @@
 
 
 
-#define ISM330DHCX_RESET_TIMEOUT_MS				0x100U
+#define ISM330DHCX_RESET_TIMEOUT_MS				100U
+static const float STANDARD_GRAVITY_MPS2_PER_G = 9.80665f;
+
 
 //Private function declarations
 static ism330dhcx_status_t ism330dhcx_read_register(
@@ -62,6 +64,13 @@ static ism330dhcx_status_t ism330dhcx_encode_performance_mode(
 static int16_t ism330dhcx_decode_int16_le(
     const uint8_t *bytes);
 
+
+static void ism330dhcx_convert_raw(
+    const ism330dhcx_raw_sample_t *raw_sample,
+    float accel_scale_mg_per_lsb,
+    float gyro_scale_mdps_per_lsb,
+    ism330dhcx_sample_t *sample);
+
 static const uint8_t accel_odr_register_values
     [ISM330DHCX_ACCEL_ODR_COUNT] =
 {
@@ -115,6 +124,28 @@ static const uint8_t gyro_range_register_values
 };
 
 
+/* Acceleration sensitivity in g/LSB. */
+static const float accel_sensitivity_g_per_lsb
+    [ISM330DHCX_ACCEL_RANGE_COUNT] =
+{
+    [ISM330DHCX_ACCEL_RANGE_2G]  = 0.000061f,
+    [ISM330DHCX_ACCEL_RANGE_4G]  = 0.000122f,
+    [ISM330DHCX_ACCEL_RANGE_8G]  = 0.000244f,
+    [ISM330DHCX_ACCEL_RANGE_16G] = 0.000488f
+};
+
+/* Angular-rate sensitivity in dps/LSB. */
+static const float gyro_sensitivity_dps_per_lsb
+    [ISM330DHCX_GYRO_DPS_COUNT] =
+{
+    [ISM330DHCX_GYRO_125_DPS]  = 0.004375f,
+    [ISM330DHCX_GYRO_250_DPS]  = 0.008750f,
+    [ISM330DHCX_GYRO_500_DPS]  = 0.017500f,
+    [ISM330DHCX_GYRO_1000_DPS] = 0.035000f,
+    [ISM330DHCX_GYRO_2000_DPS] = 0.070000f,
+    [ISM330DHCX_GYRO_4000_DPS] = 0.140000f
+};
+
 
 
 //Public functions
@@ -132,6 +163,7 @@ ism330dhcx_status_t ism330dhcx_init(
 	device->i2c = i2c;
 	device->address = ((uint16_t)address_7bit << 1U);
 	device->timeout_ms = timeout_ms;
+	device->sensor_configured = false;
 
 	return ISM330DHCX_OK;
 }
@@ -159,11 +191,16 @@ ism330dhcx_status_t ism330dhcx_read_device_id(
 	    return status;
 	}
 
+	if (*device_id != ISM330DHCX_EXPECTED_ID)
+	{
+	    return ISM330DHCX_WRONG_DEVICE;
+	}
+
 	return ISM330DHCX_OK;
 }
 
 
-ism330dhcx_status_t ism330dhcx_reset(const ism330dhcx_t *device)
+ism330dhcx_status_t ism330dhcx_reset(ism330dhcx_t *device)
 {
 
 
@@ -180,6 +217,7 @@ ism330dhcx_status_t ism330dhcx_reset(const ism330dhcx_t *device)
 	    return status;
 	}
 
+	device->sensor_configured = false;
 
 	const uint32_t start_time_ms = HAL_GetTick();
 
@@ -235,7 +273,7 @@ ism330dhcx_status_t ism330dhcx_configure_interface(const ism330dhcx_t *device, c
 }
 
 
-ism330dhcx_status_t ism330dhcx_configure_sensor(const ism330dhcx_t *device, const ism330dhcx_sensor_config_t *config)
+ism330dhcx_status_t ism330dhcx_configure_sensor(ism330dhcx_t *device, const ism330dhcx_sensor_config_t *config)
 {
     if ((device == NULL) ||
         (device->i2c == NULL) ||
@@ -355,11 +393,24 @@ ism330dhcx_status_t ism330dhcx_configure_sensor(const ism330dhcx_t *device, cons
 	    return accel_status;
 	}
 
-	return ism330dhcx_update_bits(
-	    device,
-		ISM330DHCX_CTRL2_G_REG,
-		ISM330DHCX_GYRO_CONFIG_MASK,
-		gyro_register_value);
+	const ism330dhcx_status_t gyro_status = ism330dhcx_update_bits(
+		    device,
+			ISM330DHCX_CTRL2_G_REG,
+			ISM330DHCX_GYRO_CONFIG_MASK,
+			gyro_register_value);
+
+	if (gyro_status != ISM330DHCX_OK)
+	{
+	    return gyro_status;
+	}
+
+
+
+	device->sensor_config = *config;
+	device->sensor_configured = true;
+
+
+	return ISM330DHCX_OK;
 
 }
 
@@ -401,6 +452,51 @@ ism330dhcx_status_t ism330dhcx_read_raw_sample(
 }
 
 
+ism330dhcx_status_t ism330dhcx_convert_raw_sample(
+    const ism330dhcx_t *device,
+    const ism330dhcx_raw_sample_t *raw_sample,
+    ism330dhcx_sample_t *sample)
+{
+    if ((device == NULL) ||
+        (raw_sample == NULL) ||
+        (sample == NULL))
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+    if (!device->sensor_configured)
+    {
+        return ISM330DHCX_NOT_CONFIGURED;
+    }
+
+    if ((device->sensor_config.accel_range >=
+         ISM330DHCX_ACCEL_RANGE_COUNT) ||
+        (device->sensor_config.gyro_range >=
+        		ISM330DHCX_GYRO_DPS_COUNT))
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+    const float accel_scale_mg_per_lsb =
+    		accel_sensitivity_g_per_lsb[
+            device->sensor_config.accel_range];
+
+    const float gyro_scale_mdps_per_lsb =
+    		gyro_sensitivity_dps_per_lsb[
+            device->sensor_config.gyro_range];
+
+    ism330dhcx_convert_raw(
+        raw_sample,
+        accel_scale_mg_per_lsb,
+        gyro_scale_mdps_per_lsb,
+        sample);
+
+    return ISM330DHCX_OK;
+
+}
+
+
+
 //Private functions
 static ism330dhcx_status_t ism330dhcx_read_register(
     const ism330dhcx_t *device,
@@ -425,11 +521,15 @@ static ism330dhcx_status_t ism330dhcx_read_register(
 			length,
 			device->timeout_ms);
 
-    if (hal_status != HAL_OK)
-    {
-        return ISM330DHCX_ERROR;
-    }
+	if (hal_status == HAL_TIMEOUT)
+	{
+	    return ISM330DHCX_TIMEOUT;
+	}
 
+	if (hal_status != HAL_OK)
+	{
+	    return ISM330DHCX_ERROR;
+	}
     return ISM330DHCX_OK;
 
 }
@@ -458,10 +558,15 @@ static ism330dhcx_status_t ism330dhcx_write_register(
 			length,
 			device->timeout_ms);
 
-    if (hal_status != HAL_OK)
-    {
-        return ISM330DHCX_ERROR;
-    }
+	if (hal_status == HAL_TIMEOUT)
+	{
+	    return ISM330DHCX_TIMEOUT;
+	}
+
+	if (hal_status != HAL_OK)
+	{
+	    return ISM330DHCX_ERROR;
+	}
 
     return ISM330DHCX_OK;
 
@@ -606,4 +711,24 @@ static int16_t ism330dhcx_decode_int16_le(
     return (int16_t)(
         (uint16_t)bytes[0] |
         ((uint16_t)bytes[1] << 8U));
+}
+
+static void ism330dhcx_convert_raw(
+    const ism330dhcx_raw_sample_t *raw_sample,
+    float accel_scale_mg_per_lsb,
+    float gyro_scale_mdps_per_lsb,
+    ism330dhcx_sample_t *sample)
+{
+
+	sample->acceleration_mps2.x = (float) raw_sample->accel.x * accel_scale_mg_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
+
+	sample->acceleration_mps2.y = (float) raw_sample->accel.y * accel_scale_mg_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
+
+	sample->acceleration_mps2.z = (float) raw_sample->accel.z * accel_scale_mg_per_lsb * STANDARD_GRAVITY_MPS2_PER_G;
+
+	sample->angular_rate_dps.x = (float) raw_sample->gyro.x * gyro_scale_mdps_per_lsb;
+
+	sample->angular_rate_dps.y = (float) raw_sample->gyro.y * gyro_scale_mdps_per_lsb;
+
+	sample->angular_rate_dps.z = (float) raw_sample->gyro.z * gyro_scale_mdps_per_lsb;
 }

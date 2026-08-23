@@ -66,6 +66,7 @@ static const uint32_t debounce_time_ms = 40U;
 //Motion sensor
 static ism330dhcx_t motion_sensor;
 static ism330dhcx_raw_sample_t raw_sample;
+static ism330dhcx_sample_t converted_sample;
 
 
 /* USER CODE END PV */
@@ -260,6 +261,28 @@ int main(void)
             Error_Handler();
         }
 
+
+        const ism330dhcx_status_t conversion_status =
+            ism330dhcx_convert_raw_sample(
+                &motion_sensor,
+                &raw_sample,
+                &converted_sample);
+
+        if (conversion_status != ISM330DHCX_OK)
+        {
+            Error_Handler();
+        }
+
+        printf(
+            "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
+            "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
+            (double)converted_sample.acceleration_mps2.x,
+            (double)converted_sample.acceleration_mps2.y,
+            (double)converted_sample.acceleration_mps2.z,
+            (double)converted_sample.angular_rate_dps.x,
+            (double)converted_sample.angular_rate_dps.y,
+            (double)converted_sample.angular_rate_dps.z);
+
         if (blinking_enabled)
         {
             HAL_GPIO_TogglePin(
@@ -271,16 +294,16 @@ int main(void)
     }
 
 
-    //Printf
-    printf(
-        "ACC raw: X=%d Y=%d Z=%d | "
-        "GYRO raw: X=%d Y=%d Z=%d\r\n",
-        (int)raw_sample.accel.x,
-        (int)raw_sample.accel.y,
-        (int)raw_sample.accel.z,
-        (int)raw_sample.gyro.x,
-        (int)raw_sample.gyro.y,
-        (int)raw_sample.gyro.z);
+//    //Printf
+//    printf(
+//        "ACC raw: X=%d Y=%d Z=%d | "
+//        "GYRO raw: X=%d Y=%d Z=%d\r\n",
+//        (int)raw_sample.accel.x,
+//        (int)raw_sample.accel.y,
+//        (int)raw_sample.accel.z,
+//        (int)raw_sample.gyro.x,
+//        (int)raw_sample.gyro.y,
+//        (int)raw_sample.gyro.z);
 
   }
   /* USER CODE END 3 */
