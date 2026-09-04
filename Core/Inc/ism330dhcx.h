@@ -261,6 +261,16 @@ typedef struct
 
 
 /**
+ * @brief ISM330DHCX Interrupt configuration.
+ */
+typedef struct
+{
+    bool accelerometer_drdy;
+    bool gyro_drdy;
+    bool pulsed_drdy;
+} ism330dhcx_interrupt1_output_config_t;
+
+/**
  * @brief Read Raw sensor sample.
  *
  */
@@ -330,6 +340,17 @@ ism330dhcx_status_t ism330dhcx_convert_raw_sample(
     const ism330dhcx_t *device,
     const ism330dhcx_raw_sample_t *raw_sample,
     ism330dhcx_sample_t *sample);
+
+/**
+ * @brief Configures the Data-ready INT1.
+ *
+ *	device instance
+ *	INT1 Data-ready configuration
+ */
+ism330dhcx_status_t ism330dhcx_configure_int1(
+		const ism330dhcx_t *device,
+		const ism330dhcx_interrupt1_output_config_t *config);
+
 
 #endif
 

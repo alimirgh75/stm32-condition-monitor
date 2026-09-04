@@ -520,6 +520,55 @@ ism330dhcx_status_t ism330dhcx_convert_raw_sample(
 }
 
 
+ism330dhcx_status_t ism330dhcx_configure_int1(const ism330dhcx_t *device, const ism330dhcx_interrupt1_output_config_t *config)
+{
+	if ((device == NULL) || (config == NULL))
+	{
+	    return ISM330DHCX_INVALID_ARGUMENT;
+	}
+
+
+    /* Configure latched/pulsed DRDY behavior first. */
+    const uint8_t pulsed_value =
+        config->pulsed_drdy ? ISM330DHCX_DRDY_PULSED_MASK : 0U;
+
+    const ism330dhcx_status_t pulsed_status =
+        ism330dhcx_update_bits(
+            device,
+            ISM330DHCX_COUNTER_BDR_REG1_REG,
+            ISM330DHCX_DRDY_PULSED_MASK,
+            pulsed_value);
+
+    if (pulsed_status != ISM330DHCX_OK)
+    {
+        return pulsed_status;
+    }
+
+
+    /* Configure which DRDY sources are routed to INT1. */
+    uint8_t req_value = 0U;
+
+    if (config->accelerometer_drdy)
+    {
+        req_value |= ISM330DHCX_INT1_DRDY_XL_MASK;
+    }
+
+    if (config->gyro_drdy)
+    {
+        req_value |= ISM330DHCX_INT1_DRDY_G_MASK;
+    }
+
+    return ism330dhcx_update_bits(
+        device,
+        ISM330DHCX_INT1_CTRL_REG,
+        ISM330DHCX_INT1_DRDY_MASK,
+        req_value);
+
+}
+
+
+
+
 
 //Private functions
 static ism330dhcx_status_t ism330dhcx_read_register(
@@ -857,5 +906,4 @@ static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
 
     return ISM330DHCX_OK;
 }
-
 

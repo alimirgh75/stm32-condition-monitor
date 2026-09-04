@@ -61,7 +61,7 @@ static volatile bool button_pressed_event = false;
 static bool blinking_enabled = true;
 static uint32_t last_button_tick = 0U;
 static const uint32_t debounce_time_ms = 40U;
-
+static volatile uint32_t sensor_drdy_event_count = 0U;
 
 //Motion sensor
 static ism330dhcx_t motion_sensor;
@@ -141,6 +141,12 @@ int main(void)
 		  .gyro_mode   = ISM330DHCX_MODE_HIGH_PERFORMANCE
   };
 
+  const ism330dhcx_interrupt1_output_config_t int1_config =
+  {
+	  .accelerometer_drdy = true,
+	  .gyro_drdy = false,
+	  .pulsed_drdy = true
+  };
   /* Step 1: Initialize the driver object. */
   sensor_status = ism330dhcx_init(
       &motion_sensor,
@@ -197,6 +203,16 @@ int main(void)
   sensor_status = ism330dhcx_configure_sensor(
       &motion_sensor,
       &sensor_config);
+
+  if (sensor_status != ISM330DHCX_OK)
+  {
+      Error_Handler();
+  }
+
+  /* Step 7: Apply the INT1 DRDY configuration. */
+  sensor_status = ism330dhcx_configure_int1(
+      &motion_sensor,
+      &int1_config);
 
   if (sensor_status != ISM330DHCX_OK)
   {
@@ -503,6 +519,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PB10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
@@ -538,6 +560,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 			button_pressed_event = true;
 			last_button_tick = now;
 		}
+
+	}
+	//Pin interrupt with data-ready event
+	if(GPIO_Pin == GPIO_PIN_10)
+	{
+		sensor_drdy_event_count++;
 
 	}
 }
