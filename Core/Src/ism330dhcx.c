@@ -567,7 +567,36 @@ ism330dhcx_status_t ism330dhcx_configure_int1(const ism330dhcx_t *device, const 
 }
 
 
+ism330dhcx_status_t ism330dhcx_start_sample_read_dma(
+    const ism330dhcx_t *device,
+    uint8_t *buffer,
+    uint16_t length)
+{
 
+    if ((device == NULL) ||
+        (device->i2c == NULL) ||
+        (buffer == NULL) ||
+        (length == 0U))
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+
+
+	HAL_StatusTypeDef dma_status = HAL_I2C_Mem_Read_DMA(device->i2c,
+			device->address,
+			ISM330DHCX_REG_OUTX_L_G,
+			I2C_MEMADD_SIZE_8BIT,
+			buffer, sizeof(buffer));
+
+
+    if (dma_status == HAL_OK)
+    {
+        return ISM330DHCX_OK;
+    }
+
+    return ISM330DHCX_ERROR;
+}
 
 
 //Private functions

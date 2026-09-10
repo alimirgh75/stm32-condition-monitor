@@ -17,7 +17,7 @@
 #define ISM330DHCX_I2C_ADDRESS_LOW_7BIT   0x6AU
 #define ISM330DHCX_I2C_ADDRESS_HIGH_7BIT  0x6BU
 #define ISM330DHCX_EXPECTED_ID            0x6BU
-
+#define ISM330DHCX_SAMPLE_BYTE_COUNT    12U
 typedef enum
 {
 	/** Accelerometer powered down. */
@@ -351,6 +351,11 @@ ism330dhcx_status_t ism330dhcx_configure_int1(
 		const ism330dhcx_t *device,
 		const ism330dhcx_interrupt1_output_config_t *config);
 
+
+ism330dhcx_status_t ism330dhcx_start_sample_read_dma(
+    const ism330dhcx_t *device,
+    uint8_t *buffer,
+    uint16_t length);
 
 #endif
 

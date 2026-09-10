@@ -48,6 +48,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 I2C_HandleTypeDef hi2c1;
+DMA_HandleTypeDef hdma_i2c1_rx;
 
 TIM_HandleTypeDef htim6;
 
@@ -69,11 +70,22 @@ static ism330dhcx_raw_sample_t raw_sample;
 static ism330dhcx_sample_t converted_sample;
 
 
+//DMA variables
+static uint8_t sensor_dma_rx_buffer[ISM330DHCX_SAMPLE_BYTE_COUNT];
+
+
+static volatile bool sensor_dma_complete = false;
+static volatile bool sensor_dma_busy = false;
+
+static uint32_t processed_drdy_event_count = 0U;
+static volatile uint32_t sensor_dma_complete_count = 0U;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
@@ -115,6 +127,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM6_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
@@ -236,18 +249,37 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* -- Sample board code for User push-button in interrupt mode ---- */
-//    if (BspButtonState == BUTTON_PRESSED)
-//    {
-//      /* Update button state */
-//      BspButtonState = BUTTON_RELEASED;
-//      /* -- Sample board code to toggle leds ---- */
-//      BSP_LED_Toggle(LED_GREEN);
-//      /* ..... Perform your action ..... */
-//    }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	//DMA
+
+	const uint32_t produced_drdy_events = sensor_drdy_event_count;
+
+	if((!sensor_dma_busy) && (processed_drdy_event_count != produced_drdy_events))
+	{
+		++processed_drdy_event_count;
+
+
+	    const ism330dhcx_status_t dma_status =
+	        ism330dhcx_start_sample_read_dma(
+	            &motion_sensor,
+	            sensor_dma_rx_buffer,
+	            ISM330DHCX_SAMPLE_BYTE_COUNT);
+
+	    if (dma_status == ISM330DHCX_OK)
+	    {
+	        sensor_dma_busy = true;
+	    }
+	    else
+	    {
+	        Error_Handler();
+	    }
+
+	}
+
+	//BLINKER CODE BELOW
 
     const uint32_t produced_timer_events = timer_event_count;
 
@@ -265,8 +297,10 @@ int main(void)
 
     if (processed_timer_event_count != produced_timer_events)
     {
-        ++processed_timer_event_count;
 
+
+        ++processed_timer_event_count;
+        /*
         const ism330dhcx_status_t sample_status =
             ism330dhcx_read_raw_sample(
                 &motion_sensor,
@@ -298,7 +332,7 @@ int main(void)
             (double)converted_sample.angular_rate_dps.x,
             (double)converted_sample.angular_rate_dps.y,
             (double)converted_sample.angular_rate_dps.z);
-
+		*/
         if (blinking_enabled)
         {
             HAL_GPIO_TogglePin(
@@ -496,6 +530,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -584,6 +634,18 @@ int _write(int file, char *data, int length)
     }
 
     return -1;
+}
+
+
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+	if(hi2c->Instance == I2C1)
+	{
+		sensor_dma_busy = false;
+		sensor_dma_complete = true;
+		++sensor_dma_complete_count;
+
+	}
 }
 
 /* USER CODE END 4 */
