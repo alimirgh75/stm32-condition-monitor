@@ -72,7 +72,8 @@ static ism330dhcx_sample_t converted_sample;
 
 //DMA variables
 static uint8_t sensor_dma_rx_buffer[ISM330DHCX_SAMPLE_BYTE_COUNT];
-
+static ism330dhcx_raw_sample_t dma_raw_sample;
+static ism330dhcx_sample_t dma_converted_sample;
 
 static volatile bool sensor_dma_complete = false;
 static volatile bool sensor_dma_busy = false;
@@ -257,7 +258,7 @@ int main(void)
 
 	const uint32_t produced_drdy_events = sensor_drdy_event_count;
 
-	if((!sensor_dma_busy) && (processed_drdy_event_count != produced_drdy_events))
+	if((!sensor_dma_busy) && (!sensor_dma_complete) && (processed_drdy_event_count != produced_drdy_events))
 	{
 		++processed_drdy_event_count;
 
@@ -277,6 +278,44 @@ int main(void)
 	        Error_Handler();
 	    }
 
+	}
+
+
+	if (sensor_dma_complete)
+	{
+	    /*
+	     * Eventually:
+	     * decode sensor_dma_rx_buffer into raw_sample
+	     */
+
+		ism330dhcx_status_t decode_dma = ism330dhcx_decode_raw_sample(sensor_dma_rx_buffer, ISM330DHCX_SAMPLE_BYTE_COUNT, &dma_raw_sample);
+
+		if (decode_dma != ISM330DHCX_OK)
+        {
+            Error_Handler();
+        }
+        const ism330dhcx_status_t dma_conversion_status =
+            ism330dhcx_convert_raw_sample(
+                &motion_sensor,
+                &dma_raw_sample,
+                &dma_converted_sample);
+
+        if (dma_conversion_status != ISM330DHCX_OK)
+        {
+            Error_Handler();
+        }
+
+        printf(
+            "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
+            "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
+            (double)dma_converted_sample.acceleration_mps2.x,
+            (double)dma_converted_sample.acceleration_mps2.y,
+            (double)dma_converted_sample.acceleration_mps2.z,
+            (double)dma_converted_sample.angular_rate_dps.x,
+            (double)dma_converted_sample.angular_rate_dps.y,
+            (double)dma_converted_sample.angular_rate_dps.z);
+
+	    sensor_dma_complete = false;
 	}
 
 	//BLINKER CODE BELOW

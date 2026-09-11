@@ -357,5 +357,10 @@ ism330dhcx_status_t ism330dhcx_start_sample_read_dma(
     uint8_t *buffer,
     uint16_t length);
 
+
+ism330dhcx_status_t ism330dhcx_decode_raw_sample(
+    const uint8_t *buffer,
+    uint16_t length,
+    ism330dhcx_raw_sample_t *raw_sample);
 #endif
 

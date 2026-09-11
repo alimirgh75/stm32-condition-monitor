@@ -64,7 +64,6 @@ static ism330dhcx_status_t ism330dhcx_encode_performance_mode(
 static int16_t ism330dhcx_decode_int16_le(
     const uint8_t *bytes);
 
-
 static void ism330dhcx_convert_raw(
     const ism330dhcx_raw_sample_t *raw_sample,
     float accel_scale_g_per_lsb,
@@ -462,14 +461,16 @@ ism330dhcx_status_t ism330dhcx_read_raw_sample(
 		 return read_data_status;
 	}
 
-	sample->gyro.x = ism330dhcx_decode_int16_le(&raw_data[0]);
-	sample->gyro.y = ism330dhcx_decode_int16_le(&raw_data[2]);
-	sample->gyro.z = ism330dhcx_decode_int16_le(&raw_data[4]);
+	const ism330dhcx_status_t decode_status =
+	    ism330dhcx_decode_raw_sample(
+	        raw_data,
+	        (uint16_t)sizeof(raw_data),
+	        sample);
 
-	sample->accel.x = ism330dhcx_decode_int16_le(&raw_data[6]);
-	sample->accel.y = ism330dhcx_decode_int16_le(&raw_data[8]);
-	sample->accel.z = ism330dhcx_decode_int16_le(&raw_data[10]);
-
+	if (decode_status != ISM330DHCX_OK)
+	{
+	    return decode_status;
+	}
 
 	return ISM330DHCX_OK;
 
@@ -576,7 +577,7 @@ ism330dhcx_status_t ism330dhcx_start_sample_read_dma(
     if ((device == NULL) ||
         (device->i2c == NULL) ||
         (buffer == NULL) ||
-        (length == 0U))
+        (length != ISM330DHCX_SAMPLE_BYTE_COUNT))
     {
         return ISM330DHCX_INVALID_ARGUMENT;
     }
@@ -587,7 +588,7 @@ ism330dhcx_status_t ism330dhcx_start_sample_read_dma(
 			device->address,
 			ISM330DHCX_REG_OUTX_L_G,
 			I2C_MEMADD_SIZE_8BIT,
-			buffer, sizeof(buffer));
+			buffer, length);
 
 
     if (dma_status == HAL_OK)
@@ -596,6 +597,30 @@ ism330dhcx_status_t ism330dhcx_start_sample_read_dma(
     }
 
     return ISM330DHCX_ERROR;
+}
+
+
+ism330dhcx_status_t ism330dhcx_decode_raw_sample(
+    const uint8_t *buffer,
+    uint16_t length,
+    ism330dhcx_raw_sample_t *raw_sample)
+{
+    if ((buffer == NULL) ||
+        (raw_sample == NULL) ||
+        (length != ISM330DHCX_SAMPLE_BYTE_COUNT))
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
+
+    raw_sample->gyro.x  = ism330dhcx_decode_int16_le(&buffer[0]);
+    raw_sample->gyro.y  = ism330dhcx_decode_int16_le(&buffer[2]);
+    raw_sample->gyro.z  = ism330dhcx_decode_int16_le(&buffer[4]);
+
+    raw_sample->accel.x = ism330dhcx_decode_int16_le(&buffer[6]);
+    raw_sample->accel.y = ism330dhcx_decode_int16_le(&buffer[8]);
+    raw_sample->accel.z = ism330dhcx_decode_int16_le(&buffer[10]);
+
+    return ISM330DHCX_OK;
 }
 
 
@@ -834,6 +859,7 @@ static void ism330dhcx_convert_raw(
 
 	sample->angular_rate_dps.z = (float) raw_sample->gyro.z * gyro_scale_dps_per_lsb;
 }
+
 
 
 static ism330dhcx_status_t ism330dhcx_validate_sensor_config(
