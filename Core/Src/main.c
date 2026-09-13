@@ -24,6 +24,7 @@
 #include "stdbool.h"
 #include <stdio.h>
 #include "ism330dhcx.h"
+#include "sensor_sample_buffer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -81,24 +82,6 @@ static volatile bool sensor_dma_busy = false;
 static uint32_t processed_drdy_event_count = 0U;
 static volatile uint32_t sensor_dma_complete_count = 0U;
 
-//Sensor RING BUFFER variables
-#define SENSOR_SAMPLE_BUFFER_CAPACITY 32U
-
-static ism330dhcx_raw_sample_t
-    sensor_sample_buffer[SENSOR_SAMPLE_BUFFER_CAPACITY];
-
-static uint32_t sensor_sample_write_index = 0U;
-static uint32_t sensor_sample_read_index = 0U;
-static uint32_t sensor_sample_count = 0U;
-static uint32_t sensor_sample_overrun_count = 0U;
-
-static bool sensor_sample_buffer_push(
-    const ism330dhcx_raw_sample_t *sample);
-static bool sensor_sample_buffer_pop(
-    ism330dhcx_raw_sample_t *sample);
-
-
-
 //Analysis window
 #define SENSOR_ANALYSIS_WINDOW_SIZE 128U
 
@@ -109,6 +92,7 @@ static uint32_t sensor_analysis_window_index = 0U;
 static bool sensor_analysis_window_ready = false;
 
 static uint32_t sensor_analysis_window_count = 0U;
+static sensor_sample_buffer_t sensor_sample_buffer;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -261,6 +245,8 @@ int main(void)
       Error_Handler();
   }
 
+  (void)sensor_sample_buffer_init(&sensor_sample_buffer);
+
   //Blink
   uint32_t processed_timer_event_count=0U;
   uint32_t blink_count = 0;
@@ -324,13 +310,17 @@ int main(void)
         }
 
 
-		(void)sensor_sample_buffer_push(&dma_raw_sample);
+		(void)sensor_sample_buffer_push(
+		    &sensor_sample_buffer,
+		    &dma_raw_sample);
 
 		sensor_dma_complete = false;
 
 	}
 
-	if (sensor_sample_buffer_pop(&raw_sample))
+	if (sensor_sample_buffer_pop(
+	        &sensor_sample_buffer,
+	        &raw_sample))
 	{
 	    /* convert raw_sample here */
         const ism330dhcx_status_t dma_conversion_status =
@@ -403,8 +393,8 @@ int main(void)
         	    "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
         	    (unsigned long)sensor_drdy_event_count,
         	    (unsigned long)sensor_dma_complete_count,
-        	    (unsigned long)sensor_sample_count,
-        	    (unsigned long)sensor_sample_overrun_count,
+        	    (unsigned long)sensor_sample_buffer_get_count(&sensor_sample_buffer),
+        	    (unsigned long)sensor_sample_buffer_get_overrun_count(&sensor_sample_buffer),
 				(unsigned long)sensor_analysis_window_count,
             (double)dma_converted_sample.acceleration_mps2.x,
             (double)dma_converted_sample.acceleration_mps2.y,
@@ -697,50 +687,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-static bool sensor_sample_buffer_push(
-    const ism330dhcx_raw_sample_t *sample)
-{
-    if (sample == NULL)
-    {
-        return false;
-    }
-
-	if(sensor_sample_count >= SENSOR_SAMPLE_BUFFER_CAPACITY)
-	{
-		++sensor_sample_overrun_count;
-		return false;
-	}
-
-	sensor_sample_buffer[sensor_sample_write_index] = *sample;
-
-	sensor_sample_write_index =
-	    (sensor_sample_write_index + 1U) % SENSOR_SAMPLE_BUFFER_CAPACITY;
-
-	++sensor_sample_count;
-
-
-	return true;
-}
-
-static bool sensor_sample_buffer_pop(
-    ism330dhcx_raw_sample_t *sample)
-{
-    if ((sample == NULL) || (sensor_sample_count == 0U))
-    {
-        return false;
-    }
-
-    *sample = sensor_sample_buffer[sensor_sample_read_index];
-
-    sensor_sample_read_index =
-	    (sensor_sample_read_index + 1U) % SENSOR_SAMPLE_BUFFER_CAPACITY;
-
-
-
-    --sensor_sample_count;
-
-    return true;
-}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
