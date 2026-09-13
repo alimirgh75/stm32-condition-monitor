@@ -96,6 +96,19 @@ static bool sensor_sample_buffer_push(
     const ism330dhcx_raw_sample_t *sample);
 static bool sensor_sample_buffer_pop(
     ism330dhcx_raw_sample_t *sample);
+
+
+
+//Analysis window
+#define SENSOR_ANALYSIS_WINDOW_SIZE 128U
+
+static ism330dhcx_sample_t
+    sensor_analysis_window[SENSOR_ANALYSIS_WINDOW_SIZE];
+
+static uint32_t sensor_analysis_window_index = 0U;
+static bool sensor_analysis_window_ready = false;
+
+static uint32_t sensor_analysis_window_count = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -331,6 +344,36 @@ int main(void)
             Error_Handler();
         }
 
+
+        if (!sensor_analysis_window_ready)
+        {
+
+        	sensor_analysis_window[sensor_analysis_window_index] = dma_converted_sample;
+        	++sensor_analysis_window_index;
+
+				if(sensor_analysis_window_index >= SENSOR_ANALYSIS_WINDOW_SIZE)
+				{
+					sensor_analysis_window_ready = true;
+					++sensor_analysis_window_count;
+				}
+
+
+
+        }
+
+
+
+
+
+	}
+
+	//Window consumption
+	if (sensor_analysis_window_ready)
+	{
+	    /* Later we will calculate RMS/features here. */
+
+	    sensor_analysis_window_index = 0U;
+	    sensor_analysis_window_ready = false;
 	}
 
 	//BLINKER CODE BELOW
@@ -355,14 +398,14 @@ int main(void)
 
         ++processed_timer_event_count;
 
-        printf(
-        	    "DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu | "
+        printf("DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu WINDOWS=%lu | "
         	    "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
         	    "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
         	    (unsigned long)sensor_drdy_event_count,
         	    (unsigned long)sensor_dma_complete_count,
         	    (unsigned long)sensor_sample_count,
         	    (unsigned long)sensor_sample_overrun_count,
+				(unsigned long)sensor_analysis_window_count,
             (double)dma_converted_sample.acceleration_mps2.x,
             (double)dma_converted_sample.acceleration_mps2.y,
             (double)dma_converted_sample.acceleration_mps2.z,
