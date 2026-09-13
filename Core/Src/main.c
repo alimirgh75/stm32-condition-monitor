@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include "ism330dhcx.h"
 #include "sensor_sample_buffer.h"
+#include "sensor_analysis_window.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -83,16 +84,11 @@ static uint32_t processed_drdy_event_count = 0U;
 static volatile uint32_t sensor_dma_complete_count = 0U;
 
 //Analysis window
-#define SENSOR_ANALYSIS_WINDOW_SIZE 128U
 
-static ism330dhcx_sample_t
-    sensor_analysis_window[SENSOR_ANALYSIS_WINDOW_SIZE];
 
-static uint32_t sensor_analysis_window_index = 0U;
-static bool sensor_analysis_window_ready = false;
-
-static uint32_t sensor_analysis_window_count = 0U;
 static sensor_sample_buffer_t sensor_sample_buffer;
+
+static sensor_window_t sensor_window;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -246,6 +242,7 @@ int main(void)
   }
 
   (void)sensor_sample_buffer_init(&sensor_sample_buffer);
+  (void)sensor_window_init(&sensor_window);
 
   //Blink
   uint32_t processed_timer_event_count=0U;
@@ -334,38 +331,17 @@ int main(void)
             Error_Handler();
         }
 
-
-        if (!sensor_analysis_window_ready)
-        {
-
-        	sensor_analysis_window[sensor_analysis_window_index] = dma_converted_sample;
-        	++sensor_analysis_window_index;
-
-				if(sensor_analysis_window_index >= SENSOR_ANALYSIS_WINDOW_SIZE)
-				{
-					sensor_analysis_window_ready = true;
-					++sensor_analysis_window_count;
-				}
-
-
-
-        }
-
-
-
-
+        sensor_window_push(&sensor_window, &dma_converted_sample);
 
 	}
 
 	//Window consumption
-	if (sensor_analysis_window_ready)
+	if (sensor_window_is_ready(&sensor_window))
 	{
-	    /* Later we will calculate RMS/features here. */
+	    /* analyze window */
 
-	    sensor_analysis_window_index = 0U;
-	    sensor_analysis_window_ready = false;
+	    sensor_window_release(&sensor_window);
 	}
-
 	//BLINKER CODE BELOW
 
     const uint32_t produced_timer_events = timer_event_count;
@@ -395,7 +371,7 @@ int main(void)
         	    (unsigned long)sensor_dma_complete_count,
         	    (unsigned long)sensor_sample_buffer_get_count(&sensor_sample_buffer),
         	    (unsigned long)sensor_sample_buffer_get_overrun_count(&sensor_sample_buffer),
-				(unsigned long)sensor_analysis_window_count,
+				(unsigned long)sensor_window_get_completed_count(&sensor_window),
             (double)dma_converted_sample.acceleration_mps2.x,
             (double)dma_converted_sample.acceleration_mps2.y,
             (double)dma_converted_sample.acceleration_mps2.z,
