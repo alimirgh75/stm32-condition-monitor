@@ -26,6 +26,7 @@
 #include "ism330dhcx.h"
 #include "sensor_sample_buffer.h"
 #include "sensor_analysis_window.h"
+#include "sensor_acquisition.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -64,24 +65,24 @@ static volatile bool button_pressed_event = false;
 static bool blinking_enabled = true;
 static uint32_t last_button_tick = 0U;
 static const uint32_t debounce_time_ms = 40U;
-static volatile uint32_t sensor_drdy_event_count = 0U;
+
 
 //Motion sensor
 static ism330dhcx_t motion_sensor;
 static ism330dhcx_raw_sample_t raw_sample;
-static ism330dhcx_sample_t converted_sample;
+//static ism330dhcx_sample_t converted_sample;
 
 
 //DMA variables
-static uint8_t sensor_dma_rx_buffer[ISM330DHCX_SAMPLE_BYTE_COUNT];
-static ism330dhcx_raw_sample_t dma_raw_sample;
+//static uint8_t sensor_dma_rx_buffer[ISM330DHCX_SAMPLE_BYTE_COUNT];
+//static ism330dhcx_raw_sample_t dma_raw_sample;
 static ism330dhcx_sample_t dma_converted_sample;
-
-static volatile bool sensor_dma_complete = false;
-static volatile bool sensor_dma_busy = false;
-
-static uint32_t processed_drdy_event_count = 0U;
-static volatile uint32_t sensor_dma_complete_count = 0U;
+//
+//static volatile bool sensor_dma_complete = false;
+//static volatile bool sensor_dma_busy = false;
+//
+//static uint32_t processed_drdy_event_count = 0U;
+//static volatile uint32_t sensor_dma_complete_count = 0U;
 
 //Analysis window
 
@@ -89,6 +90,8 @@ static volatile uint32_t sensor_dma_complete_count = 0U;
 static sensor_sample_buffer_t sensor_sample_buffer;
 
 static sensor_window_t sensor_window;
+
+static sensor_acquisition_t sensor_acquisition;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -243,7 +246,7 @@ int main(void)
 
   (void)sensor_sample_buffer_init(&sensor_sample_buffer);
   (void)sensor_window_init(&sensor_window);
-
+  (void)sensor_acquisition_init(&sensor_acquisition, &motion_sensor);
   //Blink
   uint32_t processed_timer_event_count=0U;
   uint32_t blink_count = 0;
@@ -267,52 +270,25 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	//DMA
 
-	const uint32_t produced_drdy_events = sensor_drdy_event_count;
+	//const uint32_t produced_drdy_events = sensor_drdy_event_count;
 
-	if((!sensor_dma_busy) && (!sensor_dma_complete) && (processed_drdy_event_count != produced_drdy_events))
+
+	const ism330dhcx_status_t status =
+	    sensor_acquisition_process(&sensor_acquisition);
+
+	if (status != ISM330DHCX_OK)
 	{
-		++processed_drdy_event_count;
-
-
-	    const ism330dhcx_status_t dma_status =
-	        ism330dhcx_start_sample_read_dma(
-	            &motion_sensor,
-	            sensor_dma_rx_buffer,
-	            ISM330DHCX_SAMPLE_BYTE_COUNT);
-
-	    if (dma_status == ISM330DHCX_OK)
-	    {
-	        sensor_dma_busy = true;
-	    }
-	    else
-	    {
-	        Error_Handler();
-	    }
-
+	    Error_Handler();
 	}
 
 
-	if (sensor_dma_complete)
+	if (sensor_acquisition_get_sample(
+	        &sensor_acquisition,
+	        &raw_sample))
 	{
-	    /*
-	     * Eventually:
-	     * decode sensor_dma_rx_buffer into raw_sample
-	     */
-
-		ism330dhcx_status_t decode_dma = ism330dhcx_decode_raw_sample(sensor_dma_rx_buffer, ISM330DHCX_SAMPLE_BYTE_COUNT, &dma_raw_sample);
-
-		if (decode_dma != ISM330DHCX_OK)
-        {
-            Error_Handler();
-        }
-
-
-		(void)sensor_sample_buffer_push(
-		    &sensor_sample_buffer,
-		    &dma_raw_sample);
-
-		sensor_dma_complete = false;
-
+	    (void)sensor_sample_buffer_push(
+	        &sensor_sample_buffer,
+	        &raw_sample);
 	}
 
 	if (sensor_sample_buffer_pop(
@@ -367,8 +343,11 @@ int main(void)
         printf("DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu WINDOWS=%lu | "
         	    "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
         	    "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
-        	    (unsigned long)sensor_drdy_event_count,
-        	    (unsigned long)sensor_dma_complete_count,
+				(unsigned long)sensor_acquisition_get_drdy_count(
+				    &sensor_acquisition),
+
+				(unsigned long)sensor_acquisition_get_dma_complete_count(
+				    &sensor_acquisition),
         	    (unsigned long)sensor_sample_buffer_get_count(&sensor_sample_buffer),
         	    (unsigned long)sensor_sample_buffer_get_overrun_count(&sensor_sample_buffer),
 				(unsigned long)sensor_window_get_completed_count(&sensor_window),
@@ -692,7 +671,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	//Pin interrupt with data-ready event
 	if(GPIO_Pin == GPIO_PIN_10)
 	{
-		sensor_drdy_event_count++;
+		sensor_acquisition_on_drdy(&sensor_acquisition);
 
 	}
 }
@@ -718,9 +697,8 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if(hi2c->Instance == I2C1)
 	{
-		sensor_dma_busy = false;
-		sensor_dma_complete = true;
-		++sensor_dma_complete_count;
+		sensor_acquisition_on_dma_complete(
+		    &sensor_acquisition);
 
 	}
 }
