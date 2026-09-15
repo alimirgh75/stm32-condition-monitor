@@ -70,28 +70,15 @@ static const uint32_t debounce_time_ms = 40U;
 //Motion sensor
 static ism330dhcx_t motion_sensor;
 static ism330dhcx_raw_sample_t raw_sample;
-//static ism330dhcx_sample_t converted_sample;
+
 
 
 //DMA variables
-//static uint8_t sensor_dma_rx_buffer[ISM330DHCX_SAMPLE_BYTE_COUNT];
-//static ism330dhcx_raw_sample_t dma_raw_sample;
 static ism330dhcx_sample_t dma_converted_sample;
-//
-//static volatile bool sensor_dma_complete = false;
-//static volatile bool sensor_dma_busy = false;
-//
-//static uint32_t processed_drdy_event_count = 0U;
-//static volatile uint32_t sensor_dma_complete_count = 0U;
-
-//Analysis window
-
-
 static sensor_sample_buffer_t sensor_sample_buffer;
-
 static sensor_window_t sensor_window;
-
 static sensor_acquisition_t sensor_acquisition;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -243,7 +230,7 @@ int main(void)
   {
       Error_Handler();
   }
-
+  /* Step 8: Apply the DMA configuration. */
   (void)sensor_sample_buffer_init(&sensor_sample_buffer);
   (void)sensor_window_init(&sensor_window);
   (void)sensor_acquisition_init(&sensor_acquisition, &motion_sensor);
@@ -268,11 +255,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
 	//DMA
-
-	//const uint32_t produced_drdy_events = sensor_drdy_event_count;
-
-
 	const ism330dhcx_status_t status =
 	    sensor_acquisition_process(&sensor_acquisition);
 
@@ -359,39 +343,7 @@ int main(void)
             (double)dma_converted_sample.angular_rate_dps.x,
             (double)dma_converted_sample.angular_rate_dps.y,
             (double)dma_converted_sample.angular_rate_dps.z);
-        /*
-        const ism330dhcx_status_t sample_status =
-            ism330dhcx_read_raw_sample(
-                &motion_sensor,
-                &raw_sample);
 
-        if (sample_status != ISM330DHCX_OK)
-        {
-            Error_Handler();
-        }
-
-
-        const ism330dhcx_status_t conversion_status =
-            ism330dhcx_convert_raw_sample(
-                &motion_sensor,
-                &raw_sample,
-                &converted_sample);
-
-        if (conversion_status != ISM330DHCX_OK)
-        {
-            Error_Handler();
-        }
-
-        printf(
-            "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
-            "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
-            (double)converted_sample.acceleration_mps2.x,
-            (double)converted_sample.acceleration_mps2.y,
-            (double)converted_sample.acceleration_mps2.z,
-            (double)converted_sample.angular_rate_dps.x,
-            (double)converted_sample.angular_rate_dps.y,
-            (double)converted_sample.angular_rate_dps.z);
-		*/
         if (blinking_enabled)
         {
             HAL_GPIO_TogglePin(
@@ -403,16 +355,6 @@ int main(void)
     }
 
 
-//    //Printf
-//    printf(
-//        "ACC raw: X=%d Y=%d Z=%d | "
-//        "GYRO raw: X=%d Y=%d Z=%d\r\n",
-//        (int)raw_sample.accel.x,
-//        (int)raw_sample.accel.y,
-//        (int)raw_sample.accel.z,
-//        (int)raw_sample.gyro.x,
-//        (int)raw_sample.gyro.y,
-//        (int)raw_sample.gyro.z);
 
   }
   /* USER CODE END 3 */
