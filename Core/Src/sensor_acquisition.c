@@ -26,6 +26,9 @@ void sensor_acquisition_init(
     acquisition->dma_busy = false;
     acquisition->dma_complete = false;
     acquisition->sample_ready = false;
+
+    acquisition->error_count = 0U;
+    acquisition->consecutive_error_count = 0U;
 }
 
 
@@ -103,7 +106,7 @@ ism330dhcx_status_t sensor_acquisition_process(
 	    {
 	        return decode_status;
 	    }
-
+	    acquisition->consecutive_error_count = 0U;
 	    acquisition->dma_complete = false;
 	    acquisition->sample_ready = true;
 	}
@@ -153,5 +156,42 @@ uint32_t sensor_acquisition_get_dma_complete_count(
     return acquisition->dma_complete_count;
 }
 
+void sensor_acquisition_on_error(
+    sensor_acquisition_t *acquisition)
+{
+    /* NULL check */
+    if (acquisition == NULL)
+    {
+        return;
+    }
+    /* increment both error counters */
+	++acquisition->consecutive_error_count;
+	++acquisition->error_count;
+    /* restore transient acquisition state */
+	acquisition->dma_busy     = false;
+	acquisition->dma_complete = false;
+	acquisition->sample_ready = false;
+}
 
+uint32_t sensor_acquisition_get_error_count(
+    const sensor_acquisition_t *acquisition)
+{
+    if (acquisition == NULL)
+    {
+        return 0U;
+    }
+
+    return acquisition->error_count;
+}
+
+uint32_t sensor_acquisition_get_consecutive_error_count(
+    const sensor_acquisition_t *acquisition)
+{
+    if (acquisition == NULL)
+    {
+        return 0U;
+    }
+
+    return acquisition->consecutive_error_count;
+}
 

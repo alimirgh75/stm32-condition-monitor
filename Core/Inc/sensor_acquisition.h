@@ -22,11 +22,16 @@ typedef struct
     uint32_t processed_drdy_event_count;
     volatile uint32_t dma_complete_count;
 
+    volatile uint32_t error_count;
+    volatile uint32_t consecutive_error_count;
+
     volatile bool dma_busy;
     volatile bool dma_complete;
     bool sample_ready;
 
 } sensor_acquisition_t;
+
+
 
 
 void sensor_acquisition_init(
@@ -51,5 +56,16 @@ uint32_t sensor_acquisition_get_drdy_count(
 
 uint32_t sensor_acquisition_get_dma_complete_count(
     const sensor_acquisition_t *acquisition);
+
+uint32_t sensor_acquisition_get_error_count(
+    const sensor_acquisition_t *acquisition);
+
+uint32_t sensor_acquisition_get_consecutive_error_count(
+    const sensor_acquisition_t *acquisition);
+
+
+void sensor_acquisition_on_error(
+    sensor_acquisition_t *acquisition);
+
 
 #endif /* INC_SENSOR_ACQUISITION_H_ */

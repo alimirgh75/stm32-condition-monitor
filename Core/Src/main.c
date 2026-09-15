@@ -340,7 +340,7 @@ int main(void)
 
         ++processed_timer_event_count;
 
-        printf("DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu WINDOWS=%lu | "
+        printf("DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu WINDOWS=%lu ERRORS=%lu CONSEC=%lu | "
         	    "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
         	    "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
 				(unsigned long)sensor_acquisition_get_drdy_count(
@@ -351,6 +351,8 @@ int main(void)
         	    (unsigned long)sensor_sample_buffer_get_count(&sensor_sample_buffer),
         	    (unsigned long)sensor_sample_buffer_get_overrun_count(&sensor_sample_buffer),
 				(unsigned long)sensor_window_get_completed_count(&sensor_window),
+				(unsigned long)sensor_acquisition_get_error_count(&sensor_acquisition),
+				(unsigned long)sensor_acquisition_get_consecutive_error_count(&sensor_acquisition),
             (double)dma_converted_sample.acceleration_mps2.x,
             (double)dma_converted_sample.acceleration_mps2.y,
             (double)dma_converted_sample.acceleration_mps2.z,
@@ -701,6 +703,17 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 		    &sensor_acquisition);
 
 	}
+}
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+    /* check which I2C instance failed */
+	if (hi2c->Instance == I2C1)
+	{
+		/* notify sensor_acquisition */
+		sensor_acquisition_on_error(&sensor_acquisition);
+	}
+
 }
 
 /* USER CODE END 4 */
