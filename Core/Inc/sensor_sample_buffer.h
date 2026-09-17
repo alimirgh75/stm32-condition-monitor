@@ -14,14 +14,14 @@
 #include <stdio.h>
 
 #include "ism330dhcx.h"
-
+#include "sensor_sample.h"
 //Sensor RING BUFFER variables
 #define SENSOR_SAMPLE_BUFFER_CAPACITY 32U
 
 
 typedef struct
 {
-    ism330dhcx_raw_sample_t samples[SENSOR_SAMPLE_BUFFER_CAPACITY];
+    sensor_sample_t samples[SENSOR_SAMPLE_BUFFER_CAPACITY];
 
     uint32_t write_index;
     uint32_t read_index;
@@ -35,11 +35,11 @@ void sensor_sample_buffer_init(
 
 bool sensor_sample_buffer_push(
     sensor_sample_buffer_t *buffer,
-    const ism330dhcx_raw_sample_t *sample);
+    const sensor_sample_t *sample);
 
 bool sensor_sample_buffer_pop(
     sensor_sample_buffer_t *buffer,
-    ism330dhcx_raw_sample_t *sample);
+    sensor_sample_t *sample);
 
 uint32_t sensor_sample_buffer_get_count(
     const sensor_sample_buffer_t *buffer);

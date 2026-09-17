@@ -36,7 +36,7 @@ void sensor_sample_buffer_init(
 
 bool sensor_sample_buffer_push(
     sensor_sample_buffer_t *buffer,
-    const ism330dhcx_raw_sample_t *sample)
+    const sensor_sample_t  *sample)
 {
     if ((buffer == NULL) || (sample == NULL))
     {
@@ -62,7 +62,7 @@ bool sensor_sample_buffer_push(
 
 bool sensor_sample_buffer_pop(
     sensor_sample_buffer_t *buffer,
-    ism330dhcx_raw_sample_t *sample)
+	sensor_sample_t   *sample)
 {
     if ((buffer == NULL) ||
         (sample == NULL) ||

@@ -53,6 +53,7 @@
 I2C_HandleTypeDef hi2c1;
 DMA_HandleTypeDef hdma_i2c1_rx;
 
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart2;
@@ -69,7 +70,7 @@ static const uint32_t debounce_time_ms = 40U;
 
 //Motion sensor
 static ism330dhcx_t motion_sensor;
-static ism330dhcx_raw_sample_t raw_sample;
+static sensor_sample_t raw_sample;
 
 
 
@@ -78,6 +79,14 @@ static ism330dhcx_sample_t dma_converted_sample;
 static sensor_sample_buffer_t sensor_sample_buffer;
 static sensor_window_t sensor_window;
 static sensor_acquisition_t sensor_acquisition;
+static uint32_t previous_timestamp_us = 0U;
+static uint32_t latest_dt_us = 0U;
+
+static uint32_t min_dt_us = UINT32_MAX;
+static uint32_t max_dt_us = 0U;
+
+static uint64_t sum_dt_us = 0U;
+static uint32_t dt_sample_count = 0U;
 
 /* USER CODE END PV */
 
@@ -88,6 +97,7 @@ static void MX_DMA_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -130,8 +140,13 @@ int main(void)
   MX_TIM6_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
+  if (HAL_TIM_Base_Start(&htim2) != HAL_OK)
+  {
+      Error_Handler();
+  }
   //ISM330DHCX sensor
   ism330dhcx_status_t sensor_status;
   uint8_t device_id = 0U;
@@ -272,18 +287,42 @@ int main(void)
 	{
 	    (void)sensor_sample_buffer_push(
 	        &sensor_sample_buffer,
-	        &raw_sample);
+	        &(raw_sample));
 	}
+
+
 
 	if (sensor_sample_buffer_pop(
 	        &sensor_sample_buffer,
 	        &raw_sample))
 	{
+
+
+	    if (previous_timestamp_us != 0U)
+	    {
+	        latest_dt_us =
+	            raw_sample.timestamp_us - previous_timestamp_us;
+
+	        if (latest_dt_us < min_dt_us)
+	        {
+	            min_dt_us = latest_dt_us;
+	        }
+
+	        if (latest_dt_us > max_dt_us)
+	        {
+	            max_dt_us = latest_dt_us;
+	        }
+
+	        sum_dt_us += latest_dt_us;
+	        ++dt_sample_count;
+	    }
+
+	    previous_timestamp_us = raw_sample.timestamp_us;
 	    /* convert raw_sample here */
         const ism330dhcx_status_t dma_conversion_status =
             ism330dhcx_convert_raw_sample(
                 &motion_sensor,
-                &raw_sample,
+                &raw_sample.data,
                 &dma_converted_sample);
 
         if (dma_conversion_status != ISM330DHCX_OK)
@@ -324,7 +363,17 @@ int main(void)
 
         ++processed_timer_event_count;
 
-        printf("DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu WINDOWS=%lu ERRORS=%lu CONSEC=%lu | "
+        //printf("TIME=%lu us\r\n", (unsigned long)time_us);
+        uint32_t avg_dt_us = 0U;
+
+        if (dt_sample_count != 0U)
+        {
+            avg_dt_us = (uint32_t)(sum_dt_us / dt_sample_count);
+        }
+
+
+
+        printf("DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu WINDOWS=%lu ERRORS=%lu CONSEC=%lu DROP= %lu DT=%lu MIN=%lu MAX=%lu AVG=%lu us | "
         	    "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
         	    "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
 				(unsigned long)sensor_acquisition_get_drdy_count(
@@ -337,6 +386,11 @@ int main(void)
 				(unsigned long)sensor_window_get_completed_count(&sensor_window),
 				(unsigned long)sensor_acquisition_get_error_count(&sensor_acquisition),
 				(unsigned long)sensor_acquisition_get_consecutive_error_count(&sensor_acquisition),
+				(unsigned long)sensor_acquisition_get_dropped_sample_count(&sensor_acquisition),
+				(unsigned long)latest_dt_us ,
+				(unsigned long)min_dt_us ,
+				(unsigned long)max_dt_us ,
+				(unsigned long)avg_dt_us ,
             (double)dma_converted_sample.acceleration_mps2.x,
             (double)dma_converted_sample.acceleration_mps2.y,
             (double)dma_converted_sample.acceleration_mps2.z,
@@ -454,6 +508,51 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 79;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
@@ -615,7 +714,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 	//Pin interrupt with data-ready event
 	if(GPIO_Pin == GPIO_PIN_10)
 	{
-		sensor_acquisition_on_drdy(&sensor_acquisition);
+		uint32_t time_us = __HAL_TIM_GET_COUNTER(&htim2);
+		sensor_acquisition_on_drdy(&sensor_acquisition, time_us);
 
 	}
 }

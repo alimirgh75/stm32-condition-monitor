@@ -10,20 +10,25 @@
 
 
 #include "ism330dhcx.h"
+#include "sensor_sample.h"
+
 
 typedef struct
 {
 	ism330dhcx_t *device;
     uint8_t dma_rx_buffer[ISM330DHCX_SAMPLE_BYTE_COUNT];
 
-    ism330dhcx_raw_sample_t raw_sample;
+    sensor_sample_t raw_sample;
 
     volatile uint32_t drdy_event_count;
     uint32_t processed_drdy_event_count;
     volatile uint32_t dma_complete_count;
 
+    uint32_t dropped_sample_count;
+
     volatile uint32_t error_count;
     volatile uint32_t consecutive_error_count;
+    volatile uint32_t latest_drdy_timestamp_us;
 
     volatile bool dma_busy;
     volatile bool dma_complete;
@@ -39,7 +44,8 @@ void sensor_acquisition_init(
     ism330dhcx_t *device);
 
 void sensor_acquisition_on_drdy(
-    sensor_acquisition_t *acquisition);
+    sensor_acquisition_t *acquisition,
+    uint32_t timestamp_us);
 
 void sensor_acquisition_on_dma_complete(
     sensor_acquisition_t *acquisition);
@@ -49,7 +55,7 @@ ism330dhcx_status_t sensor_acquisition_process(
 
 bool sensor_acquisition_get_sample(
     sensor_acquisition_t *acquisition,
-    ism330dhcx_raw_sample_t *sample);
+	sensor_sample_t *sample);
 
 uint32_t sensor_acquisition_get_drdy_count(
     const sensor_acquisition_t *acquisition);
@@ -67,5 +73,7 @@ uint32_t sensor_acquisition_get_consecutive_error_count(
 void sensor_acquisition_on_error(
     sensor_acquisition_t *acquisition);
 
+uint32_t sensor_acquisition_get_dropped_sample_count(
+    const sensor_acquisition_t *acquisition);
 
 #endif /* INC_SENSOR_ACQUISITION_H_ */

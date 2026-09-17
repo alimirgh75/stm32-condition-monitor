@@ -29,17 +29,19 @@ void sensor_acquisition_init(
 
     acquisition->error_count = 0U;
     acquisition->consecutive_error_count = 0U;
+    acquisition->dropped_sample_count = 0U;
 }
 
 
 void sensor_acquisition_on_drdy(
-    sensor_acquisition_t *acquisition){
+    sensor_acquisition_t *acquisition, const uint32_t timestamp_us){
     if (acquisition == NULL)
     {
         return;
     }
 
 	++acquisition->drdy_event_count;
+	acquisition->latest_drdy_timestamp_us = timestamp_us;
 }
 
 void sensor_acquisition_on_dma_complete(
@@ -58,66 +60,82 @@ void sensor_acquisition_on_dma_complete(
 ism330dhcx_status_t sensor_acquisition_process(
     sensor_acquisition_t *acquisition)
 {
-	if ((acquisition == NULL) ||
-	    (acquisition->device == NULL))
-	{
-	    return ISM330DHCX_INVALID_ARGUMENT;
-	}
+    if ((acquisition == NULL) ||
+        (acquisition->device == NULL))
+    {
+        return ISM330DHCX_INVALID_ARGUMENT;
+    }
 
+    /* Start a new DMA read if there is at least one unprocessed DRDY event. */
+    if ((!acquisition->dma_busy) &&
+        (!acquisition->dma_complete) &&
+        (!acquisition->sample_ready) &&
+        (acquisition->processed_drdy_event_count !=
+         acquisition->drdy_event_count))
+    {
+        const uint32_t drdy_count =
+            acquisition->drdy_event_count;
 
+        const uint32_t drdy_timestamp_us =
+            acquisition->latest_drdy_timestamp_us;
 
-	if ((!acquisition->dma_busy) &&
-	    (!acquisition->dma_complete) &&
-	    (!acquisition->sample_ready) &&
-	    (acquisition->processed_drdy_event_count !=
-	     acquisition->drdy_event_count)){
+        const uint32_t pending_events =
+            drdy_count -
+            acquisition->processed_drdy_event_count;
 
+        const ism330dhcx_status_t dma_status =
+            ism330dhcx_start_sample_read_dma(
+                acquisition->device,
+                acquisition->dma_rx_buffer,
+                ISM330DHCX_SAMPLE_BYTE_COUNT);
 
+        if (dma_status == ISM330DHCX_OK)
+        {
+            acquisition->raw_sample.timestamp_us =
+                drdy_timestamp_us;
 
-	    const ism330dhcx_status_t dma_status =
-	        ism330dhcx_start_sample_read_dma(
-	            acquisition->device,
-				acquisition->dma_rx_buffer,
-	            ISM330DHCX_SAMPLE_BYTE_COUNT);
+            acquisition->dma_busy = true;
 
-	    if (dma_status == ISM330DHCX_OK)
-	    {
-	    	acquisition->dma_busy = true;
-	    	++acquisition->processed_drdy_event_count;
-	    }
-	    else
-	    {
-	        return dma_status;
-	    }
+            if (pending_events > 1U)
+            {
+                acquisition->dropped_sample_count +=
+                    pending_events - 1U;
+            }
 
-	}
+            acquisition->processed_drdy_event_count =
+                drdy_count;
+        }
+        else
+        {
+            return dma_status;
+        }
+    }
 
+    /* Decode the received bytes once DMA has completed. */
+    if (acquisition->dma_complete)
+    {
+        const ism330dhcx_status_t decode_status =
+            ism330dhcx_decode_raw_sample(
+                acquisition->dma_rx_buffer,
+                ISM330DHCX_SAMPLE_BYTE_COUNT,
+                &acquisition->raw_sample.data);
 
+        if (decode_status != ISM330DHCX_OK)
+        {
+            return decode_status;
+        }
 
-	if (acquisition->dma_complete)
-	{
-	    const ism330dhcx_status_t decode_status =
-	        ism330dhcx_decode_raw_sample(
-	            acquisition->dma_rx_buffer,
-	            ISM330DHCX_SAMPLE_BYTE_COUNT,
-	            &acquisition->raw_sample);
+        acquisition->consecutive_error_count = 0U;
+        acquisition->dma_complete = false;
+        acquisition->sample_ready = true;
+    }
 
-	    if (decode_status != ISM330DHCX_OK)
-	    {
-	        return decode_status;
-	    }
-	    acquisition->consecutive_error_count = 0U;
-	    acquisition->dma_complete = false;
-	    acquisition->sample_ready = true;
-	}
-
-
-	return ISM330DHCX_OK;
+    return ISM330DHCX_OK;
 }
 
 bool sensor_acquisition_get_sample(
     sensor_acquisition_t *acquisition,
-    ism330dhcx_raw_sample_t *sample)
+	sensor_sample_t *sample)
 {
     if ((acquisition == NULL) || (sample == NULL))
     {
@@ -195,3 +213,13 @@ uint32_t sensor_acquisition_get_consecutive_error_count(
     return acquisition->consecutive_error_count;
 }
 
+uint32_t sensor_acquisition_get_dropped_sample_count(
+    const sensor_acquisition_t *acquisition)
+{
+    if (acquisition == NULL)
+    {
+        return 0U;
+    }
+
+    return acquisition->dropped_sample_count;
+}
