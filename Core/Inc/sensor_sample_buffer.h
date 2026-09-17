@@ -30,6 +30,7 @@ typedef struct
 
 } sensor_sample_buffer_t;
 
+
 void sensor_sample_buffer_init(
     sensor_sample_buffer_t *buffer);
 

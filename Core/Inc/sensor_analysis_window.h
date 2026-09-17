@@ -12,12 +12,13 @@
 #include <stdint.h>
 
 #include "ism330dhcx.h"
+#include "sensor_sample.h"
 
 #define SENSOR_ANALYSIS_WINDOW_SIZE 128U
 
 typedef struct
 {
-    ism330dhcx_sample_t samples[SENSOR_ANALYSIS_WINDOW_SIZE];
+	sensor_physical_sample_t samples[SENSOR_ANALYSIS_WINDOW_SIZE];
     uint32_t index;
     uint32_t completed_count;
     bool ready;
@@ -26,7 +27,7 @@ typedef struct
 
 
 void sensor_window_init(sensor_window_t *window);
-bool sensor_window_push(sensor_window_t *window, const ism330dhcx_sample_t *sample);
+bool sensor_window_push(sensor_window_t *window, const sensor_physical_sample_t *sample);
 bool sensor_window_is_ready(const sensor_window_t *window);
 void sensor_window_release(
     sensor_window_t *window);

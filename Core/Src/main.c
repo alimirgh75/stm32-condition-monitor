@@ -75,7 +75,7 @@ static sensor_sample_t raw_sample;
 
 
 //DMA variables
-static ism330dhcx_sample_t dma_converted_sample;
+static sensor_physical_sample_t  dma_converted_sample;
 static sensor_sample_buffer_t sensor_sample_buffer;
 static sensor_window_t sensor_window;
 static sensor_acquisition_t sensor_acquisition;
@@ -319,18 +319,23 @@ int main(void)
 
 	    previous_timestamp_us = raw_sample.timestamp_us;
 	    /* convert raw_sample here */
-        const ism330dhcx_status_t dma_conversion_status =
-            ism330dhcx_convert_raw_sample(
-                &motion_sensor,
-                &raw_sample.data,
-                &dma_converted_sample);
+	    const ism330dhcx_status_t dma_conversion_status =
+	        ism330dhcx_convert_raw_sample(
+	            &motion_sensor,
+	            &raw_sample.data,
+	            &dma_converted_sample.data);
 
-        if (dma_conversion_status != ISM330DHCX_OK)
-        {
-            Error_Handler();
-        }
+	    if (dma_conversion_status != ISM330DHCX_OK)
+	    {
+	        Error_Handler();
+	    }
 
-        sensor_window_push(&sensor_window, &dma_converted_sample);
+	    dma_converted_sample.timestamp_us =
+	        raw_sample.timestamp_us;
+
+	    sensor_window_push(
+	        &sensor_window,
+	        &dma_converted_sample);
 
 	}
 
@@ -373,30 +378,21 @@ int main(void)
 
 
 
-        printf("DRDY=%lu DMA=%lu BUF=%lu OVERRUN=%lu WINDOWS=%lu ERRORS=%lu CONSEC=%lu DROP= %lu DT=%lu MIN=%lu MAX=%lu AVG=%lu us | "
-        	    "ACC [m/s2]: X=%.3f Y=%.3f Z=%.3f | "
-        	    "GYRO [dps]: X=%.3f Y=%.3f Z=%.3f\r\n",
-				(unsigned long)sensor_acquisition_get_drdy_count(
-				    &sensor_acquisition),
-
-				(unsigned long)sensor_acquisition_get_dma_complete_count(
-				    &sensor_acquisition),
-        	    (unsigned long)sensor_sample_buffer_get_count(&sensor_sample_buffer),
-        	    (unsigned long)sensor_sample_buffer_get_overrun_count(&sensor_sample_buffer),
-				(unsigned long)sensor_window_get_completed_count(&sensor_window),
-				(unsigned long)sensor_acquisition_get_error_count(&sensor_acquisition),
-				(unsigned long)sensor_acquisition_get_consecutive_error_count(&sensor_acquisition),
-				(unsigned long)sensor_acquisition_get_dropped_sample_count(&sensor_acquisition),
-				(unsigned long)latest_dt_us ,
-				(unsigned long)min_dt_us ,
-				(unsigned long)max_dt_us ,
-				(unsigned long)avg_dt_us ,
-            (double)dma_converted_sample.acceleration_mps2.x,
-            (double)dma_converted_sample.acceleration_mps2.y,
-            (double)dma_converted_sample.acceleration_mps2.z,
-            (double)dma_converted_sample.angular_rate_dps.x,
-            (double)dma_converted_sample.angular_rate_dps.y,
-            (double)dma_converted_sample.angular_rate_dps.z);
+        printf(
+            "D=%lu M=%lu DROP=%lu OV=%lu ERR=%lu CONSEC=%lu DT=%lu us\r\n",
+            (unsigned long)sensor_acquisition_get_drdy_count(
+                &sensor_acquisition),
+            (unsigned long)sensor_acquisition_get_dma_complete_count(
+                &sensor_acquisition),
+            (unsigned long)sensor_acquisition_get_dropped_sample_count(
+                &sensor_acquisition),
+            (unsigned long)sensor_sample_buffer_get_overrun_count(
+                &sensor_sample_buffer),
+            (unsigned long)sensor_acquisition_get_error_count(
+                &sensor_acquisition),
+            (unsigned long)sensor_acquisition_get_consecutive_error_count(
+                &sensor_acquisition),
+            (unsigned long)latest_dt_us);
 
         if (blinking_enabled)
         {

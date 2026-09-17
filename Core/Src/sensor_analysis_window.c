@@ -21,7 +21,7 @@ void sensor_window_init(sensor_window_t *window)
     window->completed_count = 0U;
     window->ready = false;
 }
-bool sensor_window_push(sensor_window_t *window, const ism330dhcx_sample_t *sample)
+bool sensor_window_push(sensor_window_t *window, const sensor_physical_sample_t *sample)
 {
     if ((window == NULL) || (sample == NULL))
     {

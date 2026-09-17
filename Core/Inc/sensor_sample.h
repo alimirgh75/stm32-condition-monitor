@@ -17,4 +17,9 @@ typedef struct
     uint32_t timestamp_us;
 } sensor_sample_t;
 
+typedef struct
+{
+    ism330dhcx_sample_t data;
+    uint32_t timestamp_us;
+} sensor_physical_sample_t;
 #endif
