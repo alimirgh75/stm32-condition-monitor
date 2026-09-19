@@ -88,6 +88,11 @@ static uint32_t max_dt_us = 0U;
 static uint64_t sum_dt_us = 0U;
 static uint32_t dt_sample_count = 0U;
 
+static ism330dhcx_axes_t acceleration_rms;
+
+static ism330dhcx_axes_t
+    centered_accelerations[SENSOR_ANALYSIS_WINDOW_SIZE];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -342,9 +347,16 @@ int main(void)
 	//Window consumption
 	if (sensor_window_is_ready(&sensor_window))
 	{
-	    /* analyze window */
+	    if (!accelerometer_calculate_rms(
+	            &sensor_window,
+	            &acceleration_rms,
+	            centered_accelerations))
+	    {
+	        Error_Handler();
+	    }
 
 	    sensor_window_release(&sensor_window);
+
 	}
 	//BLINKER CODE BELOW
 
