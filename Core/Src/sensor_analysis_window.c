@@ -77,9 +77,12 @@ uint32_t sensor_window_get_completed_count(
 	return window->completed_count;
 }
 
-bool accelerometer_calculate_rms(const sensor_window_t *input, ism330dhcx_axes_t * rms_output, ism330dhcx_axes_t centered_output[SENSOR_ANALYSIS_WINDOW_SIZE])
-{
-    if((input == NULL) || (!sensor_window_is_ready(input)) || (centered_output == NULL) || (rms_output == NULL))
+bool sensor_window_calculate_acceleration_features(
+    const sensor_window_t *input,
+    sensor_acceleration_time_features_t *features_output,
+    ism330dhcx_axes_t
+        centered_output[SENSOR_ANALYSIS_WINDOW_SIZE]){
+    if((input == NULL) || (!sensor_window_is_ready(input)) || (centered_output == NULL) || (features_output == NULL))
     {
 
         return false;
@@ -93,6 +96,11 @@ bool accelerometer_calculate_rms(const sensor_window_t *input, ism330dhcx_axes_t
     float rms_x = 0.0f;
     float rms_y = 0.0f;
     float rms_z = 0.0f;
+
+
+    float peak_x = 0.0f;
+    float peak_y = 0.0f;
+    float peak_z = 0.0f;
 
     for(uint32_t i = 0U; i<SENSOR_ANALYSIS_WINDOW_SIZE; i++)
     {
@@ -113,11 +121,32 @@ bool accelerometer_calculate_rms(const sensor_window_t *input, ism330dhcx_axes_t
     	centered_output[i].x = input->samples[i].data.acceleration_mps2.x - mean_x;
     	rms_x += centered_output[i].x * centered_output[i].x;
 
+    	const float absolute_x = fabsf(centered_output[i].x);
+
+    	if (absolute_x > peak_x)
+    	{
+    	    peak_x = absolute_x;
+    	}
+
     	centered_output[i].y = input->samples[i].data.acceleration_mps2.y - mean_y;
     	rms_y += centered_output[i].y * centered_output[i].y;
 
+    	const float absolute_y = fabsf(centered_output[i].y);
+
+    	if (absolute_y > peak_y)
+    	{
+    	    peak_y = absolute_y;
+    	}
+
     	centered_output[i].z = input->samples[i].data.acceleration_mps2.z - mean_z;
     	rms_z += centered_output[i].z * centered_output[i].z;
+
+    	const float absolute_z = fabsf(centered_output[i].z);
+
+    	if (absolute_z > peak_z)
+    	{
+    	    peak_z = absolute_z;
+    	}
     }
 
 
@@ -126,9 +155,12 @@ bool accelerometer_calculate_rms(const sensor_window_t *input, ism330dhcx_axes_t
     rms_z /= SENSOR_ANALYSIS_WINDOW_SIZE;
 
 
-    rms_output->x = sqrtf(rms_x);
-    rms_output->y = sqrtf(rms_y);
-    rms_output->z = sqrtf(rms_z);
+    features_output->rms_mps2.x = sqrtf(rms_x);
+    features_output->rms_mps2.y = sqrtf(rms_y);
+    features_output->rms_mps2.z = sqrtf(rms_z);
+    features_output->peak_mps2.x = peak_x;
+    features_output->peak_mps2.y = peak_y;
+    features_output->peak_mps2.z = peak_z;
 
     return true;
 

@@ -92,7 +92,7 @@ static ism330dhcx_axes_t acceleration_rms;
 
 static ism330dhcx_axes_t
     centered_accelerations[SENSOR_ANALYSIS_WINDOW_SIZE];
-
+static sensor_acceleration_time_features_t acceleration_features;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -347,13 +347,22 @@ int main(void)
 	//Window consumption
 	if (sensor_window_is_ready(&sensor_window))
 	{
-	    if (!accelerometer_calculate_rms(
-	            &sensor_window,
-	            &acceleration_rms,
-	            centered_accelerations))
+	    if (!sensor_window_calculate_acceleration_features(
+	    	    &sensor_window,
+	    	    &acceleration_features,
+				centered_accelerations))
 	    {
 	        Error_Handler();
 	    }
+
+//	   printf(
+//	          "rms_x=%f rms_y=%f rms_z=%f peak_x=%f peak_y=%f peak_z=%f \r\n",
+//			  acceleration_features.rms_mps2.x,
+//			  acceleration_features.rms_mps2.y,
+//			  acceleration_features.rms_mps2.z,
+//			  acceleration_features.peak_mps2.x,
+//			  acceleration_features.peak_mps2.y,
+//			  acceleration_features.peak_mps2.z);
 
 	    sensor_window_release(&sensor_window);
 
@@ -390,21 +399,21 @@ int main(void)
 
 
 
-        printf(
-            "D=%lu M=%lu DROP=%lu OV=%lu ERR=%lu CONSEC=%lu DT=%lu us\r\n",
-            (unsigned long)sensor_acquisition_get_drdy_count(
-                &sensor_acquisition),
-            (unsigned long)sensor_acquisition_get_dma_complete_count(
-                &sensor_acquisition),
-            (unsigned long)sensor_acquisition_get_dropped_sample_count(
-                &sensor_acquisition),
-            (unsigned long)sensor_sample_buffer_get_overrun_count(
-                &sensor_sample_buffer),
-            (unsigned long)sensor_acquisition_get_error_count(
-                &sensor_acquisition),
-            (unsigned long)sensor_acquisition_get_consecutive_error_count(
-                &sensor_acquisition),
-            (unsigned long)latest_dt_us);
+//        printf(
+//            "D=%lu M=%lu DROP=%lu OV=%lu ERR=%lu CONSEC=%lu DT=%lu us\r\n",
+//            (unsigned long)sensor_acquisition_get_drdy_count(
+//                &sensor_acquisition),
+//            (unsigned long)sensor_acquisition_get_dma_complete_count(
+//                &sensor_acquisition),
+//            (unsigned long)sensor_acquisition_get_dropped_sample_count(
+//                &sensor_acquisition),
+//            (unsigned long)sensor_sample_buffer_get_overrun_count(
+//                &sensor_sample_buffer),
+//            (unsigned long)sensor_acquisition_get_error_count(
+//                &sensor_acquisition),
+//            (unsigned long)sensor_acquisition_get_consecutive_error_count(
+//                &sensor_acquisition),
+//            (unsigned long)latest_dt_us);
 
         if (blinking_enabled)
         {
