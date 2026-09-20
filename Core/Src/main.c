@@ -27,6 +27,7 @@
 #include "sensor_sample_buffer.h"
 #include "sensor_analysis_window.h"
 #include "sensor_acquisition.h"
+#include "condition_monitor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -66,7 +67,7 @@ static volatile bool button_pressed_event = false;
 static bool blinking_enabled = true;
 static uint32_t last_button_tick = 0U;
 static const uint32_t debounce_time_ms = 40U;
-static const float impact_threshold_mps2 = 1.0f;
+
 
 
 //Motion sensor
@@ -89,7 +90,6 @@ static uint32_t max_dt_us = 0U;
 static uint64_t sum_dt_us = 0U;
 static uint32_t dt_sample_count = 0U;
 
-static ism330dhcx_axes_t acceleration_rms;
 
 static ism330dhcx_axes_t
     centered_accelerations[SENSOR_ANALYSIS_WINDOW_SIZE];
@@ -182,6 +182,22 @@ int main(void)
 	  .gyro_drdy = false,
 	  .pulsed_drdy = true
   };
+
+  static const condition_monitor_config_t condition_config =
+  {
+      .impact_reference_mps2 = 1.0f,
+      .decay_factor = 0.8f,
+
+      .warning_enter_score = 3.0f,
+      .warning_exit_score = 1.0f,
+      .alarm_enter_score = 10.0f,
+	  .alarm_exit_score = 6.0f,
+      .maximum_score = 100.0f,
+
+      .sensor_fault_consecutive_error_limit = 3U
+  };
+
+  static condition_monitor_t condition_monitor;
   /* Step 1: Initialize the driver object. */
   sensor_status = ism330dhcx_init(
       &motion_sensor,
@@ -257,6 +273,15 @@ int main(void)
   (void)sensor_sample_buffer_init(&sensor_sample_buffer);
   (void)sensor_window_init(&sensor_window);
   (void)sensor_acquisition_init(&sensor_acquisition, &motion_sensor);
+
+  /* Step 9: Apply the condition monitoring configuration. */
+
+  if (!condition_monitor_init(&condition_monitor,&condition_config))
+  {
+      Error_Handler();
+  }
+  condition_state_t last_reported_state = CONDITION_STATE_COUNT;
+
   //Blink
   uint32_t processed_timer_event_count=0U;
   uint32_t blink_count = 0;
@@ -278,14 +303,20 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
+	bool has_new_window = false;
 	//DMA
 	const ism330dhcx_status_t status =
 	    sensor_acquisition_process(&sensor_acquisition);
 
-	if (status != ISM330DHCX_OK)
+	if (status == ISM330DHCX_INVALID_ARGUMENT)
 	{
+	    /* Programming/configuration error. */
 	    Error_Handler();
+	}
+	else if (status != ISM330DHCX_OK)
+	{
+	    /* Count recoverable DMA-start errors too. */
+	    sensor_acquisition_on_error(&sensor_acquisition);
 	}
 
 
@@ -350,6 +381,7 @@ int main(void)
 	//Window consumption
 	if (sensor_window_is_ready(&sensor_window))
 	{
+
 	    if (!sensor_window_calculate_acceleration_features(
 	    	    &sensor_window,
 	    	    &acceleration_features,
@@ -357,36 +389,58 @@ int main(void)
 	    {
 	        Error_Handler();
 	    }
-
-	    const bool impact_detected =
-	        acceleration_features.max_magnitude_mps2 >=
-	        impact_threshold_mps2;
-
-	    const uint32_t dropped_samples =
-	        sensor_acquisition_get_dropped_sample_count(
-	            &sensor_acquisition);
-//	   printf(
-//	          "rms_x=%f rms_y=%f rms_z=%f peak_x=%f peak_y=%f peak_z=%f \r\n",
-//			  acceleration_features.rms_mps2.x,
-//			  acceleration_features.rms_mps2.y,
-//			  acceleration_features.rms_mps2.z,
-//			  acceleration_features.peak_mps2.x,
-//			  acceleration_features.peak_mps2.y,
-//			  acceleration_features.peak_mps2.z);
+	    has_new_window = true;
 
 	    sensor_window_release(&sensor_window);
-	    if (impact_detected)
-	    {
-	        printf(
-	            "IMP M=%.3f I=%lu T=%lu D=%lu\r\n",
-	            acceleration_features.max_magnitude_mps2,
-	            (unsigned long)
-	                acceleration_features.max_magnitude_index,
-	            (unsigned long)
-	                acceleration_features.max_magnitude_timestamp_us,
-	            (unsigned long)dropped_samples);
-	    }
 
+	}
+
+	const condition_monitor_input_t condition_input =
+	{
+	    .has_new_window = has_new_window,
+
+	    .max_magnitude_mps2 =
+	        has_new_window
+	            ? acceleration_features.max_magnitude_mps2
+	            : 0.0f,
+
+	    .consecutive_sensor_errors =
+	        sensor_acquisition_get_consecutive_error_count(
+	            &sensor_acquisition)
+	};
+
+	if (!condition_monitor_update(
+	        &condition_monitor,
+	        &condition_input))
+	{
+	    Error_Handler();
+	}
+
+	const condition_state_t current_state =
+	    condition_monitor_get_state(&condition_monitor);
+
+	/*
+	 * Print every completed window so we can observe and tune the score.
+	 * Also print immediately if SENSOR_FAULT occurs without a new window.
+	 */
+	if (has_new_window ||
+	    (current_state != last_reported_state))
+	{
+	    printf(
+	        "CM S=%u Q=%.2f M=%.2f E=%lu D=%lu\r\n",
+	        (unsigned int)current_state,
+	        condition_monitor_get_severity_score(
+	            &condition_monitor),
+	        has_new_window
+	            ? acceleration_features.max_magnitude_mps2
+	            : 0.0f,
+	        (unsigned long)
+	            condition_input.consecutive_sensor_errors,
+	        (unsigned long)
+	            sensor_acquisition_get_dropped_sample_count(
+	                &sensor_acquisition));
+
+	    last_reported_state = current_state;
 	}
 	//BLINKER CODE BELOW
 
@@ -409,32 +463,6 @@ int main(void)
 
 
         ++processed_timer_event_count;
-
-        //printf("TIME=%lu us\r\n", (unsigned long)time_us);
-        uint32_t avg_dt_us = 0U;
-
-        if (dt_sample_count != 0U)
-        {
-            avg_dt_us = (uint32_t)(sum_dt_us / dt_sample_count);
-        }
-
-
-
-//        printf(
-//            "D=%lu M=%lu DROP=%lu OV=%lu ERR=%lu CONSEC=%lu DT=%lu us\r\n",
-//            (unsigned long)sensor_acquisition_get_drdy_count(
-//                &sensor_acquisition),
-//            (unsigned long)sensor_acquisition_get_dma_complete_count(
-//                &sensor_acquisition),
-//            (unsigned long)sensor_acquisition_get_dropped_sample_count(
-//                &sensor_acquisition),
-//            (unsigned long)sensor_sample_buffer_get_overrun_count(
-//                &sensor_sample_buffer),
-//            (unsigned long)sensor_acquisition_get_error_count(
-//                &sensor_acquisition),
-//            (unsigned long)sensor_acquisition_get_consecutive_error_count(
-//                &sensor_acquisition),
-//            (unsigned long)latest_dt_us);
 
         if (blinking_enabled)
         {
