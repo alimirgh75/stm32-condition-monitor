@@ -66,6 +66,7 @@ static volatile bool button_pressed_event = false;
 static bool blinking_enabled = true;
 static uint32_t last_button_tick = 0U;
 static const uint32_t debounce_time_ms = 40U;
+static const float impact_threshold_mps2 = 1.0f;
 
 
 //Motion sensor
@@ -93,6 +94,8 @@ static ism330dhcx_axes_t acceleration_rms;
 static ism330dhcx_axes_t
     centered_accelerations[SENSOR_ANALYSIS_WINDOW_SIZE];
 static sensor_acceleration_time_features_t acceleration_features;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -355,6 +358,13 @@ int main(void)
 	        Error_Handler();
 	    }
 
+	    const bool impact_detected =
+	        acceleration_features.max_magnitude_mps2 >=
+	        impact_threshold_mps2;
+
+	    const uint32_t dropped_samples =
+	        sensor_acquisition_get_dropped_sample_count(
+	            &sensor_acquisition);
 //	   printf(
 //	          "rms_x=%f rms_y=%f rms_z=%f peak_x=%f peak_y=%f peak_z=%f \r\n",
 //			  acceleration_features.rms_mps2.x,
@@ -365,6 +375,17 @@ int main(void)
 //			  acceleration_features.peak_mps2.z);
 
 	    sensor_window_release(&sensor_window);
+	    if (impact_detected)
+	    {
+	        printf(
+	            "IMP M=%.3f I=%lu T=%lu D=%lu\r\n",
+	            acceleration_features.max_magnitude_mps2,
+	            (unsigned long)
+	                acceleration_features.max_magnitude_index,
+	            (unsigned long)
+	                acceleration_features.max_magnitude_timestamp_us,
+	            (unsigned long)dropped_samples);
+	    }
 
 	}
 	//BLINKER CODE BELOW

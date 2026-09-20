@@ -35,6 +35,11 @@ typedef struct
 {
     ism330dhcx_axes_t rms_mps2;
     ism330dhcx_axes_t peak_mps2;
+
+    float max_magnitude_mps2;
+    uint32_t max_magnitude_index;
+    uint32_t max_magnitude_timestamp_us;
+
 } sensor_acceleration_time_features_t;
 
 void sensor_window_init(sensor_window_t *window);

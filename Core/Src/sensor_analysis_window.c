@@ -102,6 +102,9 @@ bool sensor_window_calculate_acceleration_features(
     float peak_y = 0.0f;
     float peak_z = 0.0f;
 
+    float magnitude_squared = 0.0f;
+    float max_magnitude_squared = 0.0f;
+
     for(uint32_t i = 0U; i<SENSOR_ANALYSIS_WINDOW_SIZE; i++)
     {
         mean_x +=  input->samples[i].data.acceleration_mps2.x;
@@ -147,8 +150,21 @@ bool sensor_window_calculate_acceleration_features(
     	{
     	    peak_z = absolute_z;
     	}
+
+    	magnitude_squared = centered_output[i].x * centered_output[i].x +
+    						centered_output[i].y * centered_output[i].y +
+							centered_output[i].z * centered_output[i].z;
+
+    	if (magnitude_squared > max_magnitude_squared)
+    	{
+    		max_magnitude_squared = magnitude_squared;
+    		features_output->max_magnitude_index = i;
+    	}
     }
 
+    features_output->max_magnitude_mps2 = sqrtf(max_magnitude_squared);
+
+    features_output->max_magnitude_timestamp_us = input->samples[features_output->max_magnitude_index].timestamp_us;
 
     rms_x /= SENSOR_ANALYSIS_WINDOW_SIZE;
     rms_y /= SENSOR_ANALYSIS_WINDOW_SIZE;
