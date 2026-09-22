@@ -8,6 +8,7 @@
 
 #include "condition_monitor.h"
 
+#include <stddef.h>
 
 static bool condition_monitor_config_is_valid(
     const condition_monitor_config_t *config);
