@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -32,11 +33,20 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct
+{
+    condition_state_t state;
+    float severity_score;
+    float max_magnitude_mps2;
+    uint32_t consecutive_sensor_errors;
+    uint32_t dropped_sensor_samples;
+    uint32_t dropped_telemetry_reports;
+} telemetry_report_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define TELEMETRY_QUEUE_CAPACITY 4U
 
 /* USER CODE END PD */
 
@@ -59,6 +69,20 @@ TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart2;
 
+/* Definitions for acquisitionTask */
+osThreadId_t acquisitionTaskHandle;
+const osThreadAttr_t acquisitionTask_attributes = {
+  .name = "acquisitionTask",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for interfaceTask */
+osThreadId_t interfaceTaskHandle;
+const osThreadAttr_t interfaceTask_attributes = {
+  .name = "interfaceTask",
+  .stack_size = 750 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* USER CODE BEGIN PV */
 
 static volatile uint32_t timer_event_count=0U;
@@ -94,7 +118,8 @@ static uint32_t dt_sample_count = 0U;
 static ism330dhcx_axes_t
     centered_accelerations[SENSOR_ANALYSIS_WINDOW_SIZE];
 static sensor_acceleration_time_features_t acceleration_features;
-
+static condition_monitor_t condition_monitor;
+static osMessageQueueId_t telemetry_queue_handle;
 
 /* USER CODE END PV */
 
@@ -106,6 +131,9 @@ static void MX_TIM6_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
+void StartDefaultTask(void *argument);
+void StartTask02(void *argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -197,7 +225,7 @@ int main(void)
       .sensor_fault_consecutive_error_limit = 3U
   };
 
-  static condition_monitor_t condition_monitor;
+
   /* Step 1: Initialize the driver object. */
   sensor_status = ism330dhcx_init(
       &motion_sensor,
@@ -280,11 +308,6 @@ int main(void)
   {
       Error_Handler();
   }
-  condition_state_t last_reported_state = CONDITION_STATE_COUNT;
-
-  //Blink
-  uint32_t processed_timer_event_count=0U;
-  uint32_t blink_count = 0;
 
   if(HAL_TIM_Base_Start_IT(&htim6) != HAL_OK)
   {
@@ -292,8 +315,57 @@ int main(void)
   }
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  telemetry_queue_handle = osMessageQueueNew(
+      TELEMETRY_QUEUE_CAPACITY,
+      sizeof(telemetry_report_t),
+      NULL);
+
+  if (telemetry_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
+
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of acquisitionTask */
+  acquisitionTaskHandle = osThreadNew(StartDefaultTask, NULL, &acquisitionTask_attributes);
+
+  /* creation of interfaceTask */
+  interfaceTaskHandle = osThreadNew(StartTask02, NULL, &interfaceTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
   /* Initialize leds */
   BSP_LED_Init(LED_GREEN);
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -303,178 +375,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	bool has_new_window = false;
-	//DMA
-	const ism330dhcx_status_t status =
-	    sensor_acquisition_process(&sensor_acquisition);
-
-	if (status == ISM330DHCX_INVALID_ARGUMENT)
-	{
-	    /* Programming/configuration error. */
-	    Error_Handler();
-	}
-	else if (status != ISM330DHCX_OK)
-	{
-	    /* Count recoverable DMA-start errors too. */
-	    sensor_acquisition_on_error(&sensor_acquisition);
-	}
-
-
-	if (sensor_acquisition_get_sample(
-	        &sensor_acquisition,
-	        &raw_sample))
-	{
-	    (void)sensor_sample_buffer_push(
-	        &sensor_sample_buffer,
-	        &(raw_sample));
-	}
-
-
-
-	if (sensor_sample_buffer_pop(
-	        &sensor_sample_buffer,
-	        &raw_sample))
-	{
-
-
-	    if (previous_timestamp_us != 0U)
-	    {
-	        latest_dt_us =
-	            raw_sample.timestamp_us - previous_timestamp_us;
-
-	        if (latest_dt_us < min_dt_us)
-	        {
-	            min_dt_us = latest_dt_us;
-	        }
-
-	        if (latest_dt_us > max_dt_us)
-	        {
-	            max_dt_us = latest_dt_us;
-	        }
-
-	        sum_dt_us += latest_dt_us;
-	        ++dt_sample_count;
-	    }
-
-	    previous_timestamp_us = raw_sample.timestamp_us;
-	    /* convert raw_sample here */
-	    const ism330dhcx_status_t dma_conversion_status =
-	        ism330dhcx_convert_raw_sample(
-	            &motion_sensor,
-	            &raw_sample.data,
-	            &dma_converted_sample.data);
-
-	    if (dma_conversion_status != ISM330DHCX_OK)
-	    {
-	        Error_Handler();
-	    }
-
-	    dma_converted_sample.timestamp_us =
-	        raw_sample.timestamp_us;
-
-	    sensor_window_push(
-	        &sensor_window,
-	        &dma_converted_sample);
-
-	}
-
-	//Window consumption
-	if (sensor_window_is_ready(&sensor_window))
-	{
-
-	    if (!sensor_window_calculate_acceleration_features(
-	    	    &sensor_window,
-	    	    &acceleration_features,
-				centered_accelerations))
-	    {
-	        Error_Handler();
-	    }
-	    has_new_window = true;
-
-	    sensor_window_release(&sensor_window);
-
-	}
-
-	const condition_monitor_input_t condition_input =
-	{
-	    .has_new_window = has_new_window,
-
-	    .max_magnitude_mps2 =
-	        has_new_window
-	            ? acceleration_features.max_magnitude_mps2
-	            : 0.0f,
-
-	    .consecutive_sensor_errors =
-	        sensor_acquisition_get_consecutive_error_count(
-	            &sensor_acquisition)
-	};
-
-	if (!condition_monitor_update(
-	        &condition_monitor,
-	        &condition_input))
-	{
-	    Error_Handler();
-	}
-
-	const condition_state_t current_state =
-	    condition_monitor_get_state(&condition_monitor);
-
-	/*
-	 * Print every completed window so we can observe and tune the score.
-	 * Also print immediately if SENSOR_FAULT occurs without a new window.
-	 */
-	if (has_new_window ||
-	    (current_state != last_reported_state))
-	{
-	    printf(
-	        "CM S=%u Q=%.2f M=%.2f E=%lu D=%lu\r\n",
-	        (unsigned int)current_state,
-	        condition_monitor_get_severity_score(
-	            &condition_monitor),
-	        has_new_window
-	            ? acceleration_features.max_magnitude_mps2
-	            : 0.0f,
-	        (unsigned long)
-	            condition_input.consecutive_sensor_errors,
-	        (unsigned long)
-	            sensor_acquisition_get_dropped_sample_count(
-	                &sensor_acquisition));
-
-	    last_reported_state = current_state;
-	}
-	//BLINKER CODE BELOW
-
-    const uint32_t produced_timer_events = timer_event_count;
-
-    //Check the button, toggles the enabled flag
-    if(button_pressed_event)
-    {
-    	button_pressed_event = false;
-    	blinking_enabled = !blinking_enabled;
-
-    	if(!blinking_enabled)
-    	{
-    		HAL_GPIO_WritePin(LED2_GPIO_PORT, LED2_PIN, GPIO_PIN_RESET);
-    	}
-    }
-
-    if (processed_timer_event_count != produced_timer_events)
-    {
-
-
-        ++processed_timer_event_count;
-
-        if (blinking_enabled)
-        {
-            HAL_GPIO_TogglePin(
-                LED2_GPIO_PORT,
-                LED2_PIN);
-
-            ++blink_count;
-        }
-    }
-
-
 
   }
   /* USER CODE END 3 */
@@ -706,7 +606,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
@@ -742,7 +642,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -751,17 +651,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-	//Timer that gives the toggle frequency
-	if(htim->Instance == TIM6)
-	{
-		++timer_event_count;
-	}
-
-}
-
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 
@@ -825,6 +714,299 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 }
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+	   (void)argument;
+
+	    condition_state_t last_reported_state =
+	        CONDITION_STATE_COUNT;
+	    uint32_t dropped_telemetry_reports = 0U;
+
+  /* Infinite loop */
+  for(;;)
+  {
+
+
+		bool has_new_window = false;
+		//DMA
+		const ism330dhcx_status_t status =
+		    sensor_acquisition_process(&sensor_acquisition);
+
+		if (status == ISM330DHCX_INVALID_ARGUMENT)
+		{
+		    /* Programming/configuration error. */
+		    Error_Handler();
+		}
+		else if (status != ISM330DHCX_OK)
+		{
+		    /* Count recoverable DMA-start errors too. */
+		    sensor_acquisition_on_error(&sensor_acquisition);
+		}
+
+
+		if (sensor_acquisition_get_sample(
+		        &sensor_acquisition,
+		        &raw_sample))
+		{
+		    (void)sensor_sample_buffer_push(
+		        &sensor_sample_buffer,
+		        &(raw_sample));
+		}
+
+
+
+		if (sensor_sample_buffer_pop(
+		        &sensor_sample_buffer,
+		        &raw_sample))
+		{
+
+
+		    if (previous_timestamp_us != 0U)
+		    {
+		        latest_dt_us =
+		            raw_sample.timestamp_us - previous_timestamp_us;
+
+		        if (latest_dt_us < min_dt_us)
+		        {
+		            min_dt_us = latest_dt_us;
+		        }
+
+		        if (latest_dt_us > max_dt_us)
+		        {
+		            max_dt_us = latest_dt_us;
+		        }
+
+		        sum_dt_us += latest_dt_us;
+		        ++dt_sample_count;
+		    }
+
+		    previous_timestamp_us = raw_sample.timestamp_us;
+		    /* convert raw_sample here */
+		    const ism330dhcx_status_t dma_conversion_status =
+		        ism330dhcx_convert_raw_sample(
+		            &motion_sensor,
+		            &raw_sample.data,
+		            &dma_converted_sample.data);
+
+		    if (dma_conversion_status != ISM330DHCX_OK)
+		    {
+		        Error_Handler();
+		    }
+
+		    dma_converted_sample.timestamp_us =
+		        raw_sample.timestamp_us;
+
+		    sensor_window_push(
+		        &sensor_window,
+		        &dma_converted_sample);
+
+		}
+
+		//Window consumption
+		if (sensor_window_is_ready(&sensor_window))
+		{
+
+		    if (!sensor_window_calculate_acceleration_features(
+		    	    &sensor_window,
+		    	    &acceleration_features,
+					centered_accelerations))
+		    {
+		        Error_Handler();
+		    }
+		    has_new_window = true;
+
+		    sensor_window_release(&sensor_window);
+
+		}
+
+		const condition_monitor_input_t condition_input =
+		{
+		    .has_new_window = has_new_window,
+
+		    .max_magnitude_mps2 =
+		        has_new_window
+		            ? acceleration_features.max_magnitude_mps2
+		            : 0.0f,
+
+		    .consecutive_sensor_errors =
+		        sensor_acquisition_get_consecutive_error_count(
+		            &sensor_acquisition)
+		};
+
+		if (!condition_monitor_update(
+		        &condition_monitor,
+		        &condition_input))
+		{
+		    Error_Handler();
+		}
+
+		const condition_state_t current_state =
+		    condition_monitor_get_state(&condition_monitor);
+
+		/*
+		 * Prints a report of sensor acquisition window
+		 */
+		if (has_new_window ||
+		    (current_state != last_reported_state))
+		{
+
+		    const telemetry_report_t report =
+		    {
+		    		.dropped_telemetry_reports = dropped_telemetry_reports,
+					.state = current_state,
+					.severity_score =
+							condition_monitor_get_severity_score(&condition_monitor),
+					.max_magnitude_mps2 =
+							has_new_window ? acceleration_features.max_magnitude_mps2 : 0.0f,
+					.consecutive_sensor_errors =
+							condition_input.consecutive_sensor_errors,
+					.dropped_sensor_samples =
+							sensor_acquisition_get_dropped_sample_count(&sensor_acquisition)
+
+
+		    };
+
+		    //Message put on the queue
+		    const osStatus_t queue_status =
+		        osMessageQueuePut(
+		            telemetry_queue_handle,
+		            &report,
+		            0U,  /* No message priority. */
+		            0U);
+		    if (queue_status == osOK)
+		    {
+		        last_reported_state = current_state;
+		    }
+		    else if (queue_status == osErrorResource)
+		    {
+		        /* Queue was full. */
+		        ++dropped_telemetry_reports;
+		    }
+		    else
+		    {
+		        /* Invalid queue or another programming error. */
+		        Error_Handler();
+		    }
+		}
+
+    osDelay(1U);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartTask02 */
+/**
+* @brief Function implementing the interfaceTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask02 */
+void StartTask02(void *argument)
+{
+  /* USER CODE BEGIN StartTask02 */
+	(void)argument;
+	uint32_t processed_timer_event_count = 0U;
+
+	telemetry_report_t report;
+  /* Infinite loop */
+  for(;;)
+  {
+
+	  const osStatus_t queue_status =
+	      osMessageQueueGet(
+	          telemetry_queue_handle,
+	          &report,
+	          NULL,
+	          10U);
+	  if (queue_status == osOK)
+	  {
+	      printf(
+	          "CM S=%u Q=%.2f M=%.2f E=%lu D=%lu TD=%lu\r\n",
+	          (unsigned int)report.state,
+	          report.severity_score,
+	          report.max_magnitude_mps2,
+	          (unsigned long)report.consecutive_sensor_errors,
+	          (unsigned long)report.dropped_sensor_samples,
+	          (unsigned long)report.dropped_telemetry_reports);
+	  }
+
+	  else if (queue_status != osErrorTimeout)
+	  {
+	      Error_Handler();
+	  }
+
+		//BLINKER CODE BELOW
+
+	  const uint32_t produced_timer_events = timer_event_count;
+
+	    //Check the button, toggles the enabled flag
+	    if(button_pressed_event)
+	    {
+	    	button_pressed_event = false;
+	    	blinking_enabled = !blinking_enabled;
+
+	    	if(!blinking_enabled)
+	    	{
+	    		HAL_GPIO_WritePin(LED2_GPIO_PORT, LED2_PIN, GPIO_PIN_RESET);
+	    	}
+	    }
+
+	    if (processed_timer_event_count != produced_timer_events)
+	    {
+
+
+	        ++processed_timer_event_count;
+
+	        if (blinking_enabled)
+	        {
+	            HAL_GPIO_TogglePin(
+	                LED2_GPIO_PORT,
+	                LED2_PIN);
+
+
+	        }
+	    }
+
+  }
+  /* USER CODE END StartTask02 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM7 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+	//Timer that gives the toggle frequency
+	if(htim->Instance == TIM6)
+	{
+		++timer_event_count;
+	}
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM7)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
