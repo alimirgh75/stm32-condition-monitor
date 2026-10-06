@@ -29,6 +29,11 @@
 #include "sensor_analysis_window.h"
 #include "sensor_acquisition.h"
 #include "condition_monitor.h"
+
+#include "cli.h"
+//#include "cli_output.h"
+#include "control_command.h"
+//#include "uart_console.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,6 +52,9 @@ typedef struct
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define TELEMETRY_QUEUE_CAPACITY 4U
+
+#define UART_RX_QUEUE_CAPACITY     64U
+#define CONTROL_RESPONSE_TIMEOUT_TICKS 250U
 
 /* USER CODE END PD */
 
@@ -83,6 +91,8 @@ const osThreadAttr_t interfaceTask_attributes = {
   .stack_size = 750 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
+
+
 /* USER CODE BEGIN PV */
 
 static volatile uint32_t timer_event_count=0U;
@@ -119,8 +129,15 @@ static ism330dhcx_axes_t
     centered_accelerations[SENSOR_ANALYSIS_WINDOW_SIZE];
 static sensor_acceleration_time_features_t acceleration_features;
 static condition_monitor_t condition_monitor;
-static osMessageQueueId_t telemetry_queue_handle;
 
+
+
+static osMessageQueueId_t telemetry_queue_handle;
+static osMessageQueueId_t rx_queue_handle;
+static uint8_t uart_rx_byte;
+static volatile uint32_t uart_rx_dropped_byte_count = 0U;
+static volatile uint32_t uart_rx_rearm_error_count = 0U;
+static volatile bool uart_rx_restart_required = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -134,13 +151,17 @@ static void MX_TIM2_Init(void);
 void StartDefaultTask(void *argument);
 void StartTask02(void *argument);
 
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static void handle_control_command(
+    const control_command_t *command,
+    const telemetry_report_t *report,
+    bool report_available);
 /* USER CODE END 0 */
 
 /**
@@ -342,6 +363,14 @@ int main(void)
       Error_Handler();
   }
 
+  rx_queue_handle = osMessageQueueNew(
+      UART_RX_QUEUE_CAPACITY,
+      sizeof(uint8_t),
+      NULL);
+  if (rx_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -652,6 +681,57 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+static void handle_control_command(
+    const control_command_t *command,
+    const telemetry_report_t *report,
+    bool report_available)
+{
+	if((command == NULL) || (report == NULL)){return;}
+
+	switch(command->command_type){
+	case CONTROL_COMMAND_HELP:
+	    printf(
+	        "Available commands:\r\n"
+	        "  help                         - Show this command list\r\n"
+	        "  get status                   - Show the latest monitoring report\r\n"
+	        "\r\n"
+	        "Planned commands (not implemented yet):\r\n"
+	        "  get config                   - Show sensor and monitoring settings\r\n"
+	        "  get rate                     - Show configured sampling rates\r\n"
+	        "  set rate <hz>                - Request a supported sampling rate\r\n"
+	        "  get impact-reference         - Show the severity calculation reference\r\n"
+	        "  set impact-reference <mps2>   - Set reference acceleration in m/s^2\r\n"
+	        "  get errors                   - Show sensor and UART error/drop counters\r\n"
+	        "  get version                  - Show firmware version\r\n"
+	        "  start                        - Start acquisition\r\n"
+	        "  stop                         - Stop acquisition\r\n");
+		break;
+
+	case CONTROL_COMMAND_GET_STATUS:
+		if(!report_available)
+		{
+			printf("No report available yet\r\n");
+			break;
+		}
+	    printf(
+	        "condition_state=%u\r\n"
+	        "severity_score=%.2f\r\n"
+	        "max_magnitude_mps2=%.3f\r\n"
+	        "consecutive_sensor_errors=%lu\r\n"
+	        "dropped_sensor_samples=%lu\r\n"
+	        "dropped_telemetry_reports=%lu\r\n",
+	        (unsigned int)report->state,
+	        report->severity_score,
+	        report->max_magnitude_mps2,
+	        (unsigned long)report->consecutive_sensor_errors,
+	        (unsigned long)report->dropped_sensor_samples,
+	        (unsigned long)report->dropped_telemetry_reports);
+		break;
+
+	default:printf("Command not implemented yet \r\n");
+	}
+}
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 
 	//Pin interrupt with 40ms debounce, sets the event flag
@@ -711,6 +791,39 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 		sensor_acquisition_on_error(&sensor_acquisition);
 	}
 
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    /* check which USART instance */
+	if (huart->Instance == USART2)
+	{
+
+	    //Message put on the queue
+	    const osStatus_t queue_status =
+	        osMessageQueuePut(
+	            rx_queue_handle,
+	            &uart_rx_byte,
+	            0U,  /* No message priority. */
+	            0U);
+
+	    if (queue_status == osErrorResource)
+	    {
+	        /* Queue was full. */
+	        ++uart_rx_dropped_byte_count;
+	    }
+
+		if (HAL_UART_Receive_IT(
+		        huart,
+		        &uart_rx_byte,
+		        sizeof(uart_rx_byte)) != HAL_OK)
+		{
+			++uart_rx_rearm_error_count;
+			uart_rx_restart_required = true;
+		    return;
+		}
+
+	}
 }
 
 /* USER CODE END 4 */
@@ -916,30 +1029,92 @@ void StartTask02(void *argument)
 	(void)argument;
 	uint32_t processed_timer_event_count = 0U;
 
-	telemetry_report_t report;
+	telemetry_report_t report = {0};
+	bool report_available = false;
+
+	if (HAL_UART_Receive_IT(
+	        &huart2,
+	        &uart_rx_byte,
+	        sizeof(uart_rx_byte)) != HAL_OK)
+	{
+	    Error_Handler();
+	}
+	static command_assembler_state_t cli_assember_state;
+	(void)command_assembler_init(&cli_assember_state);
   /* Infinite loop */
   for(;;)
   {
+	  uint8_t received_byte;
 
+	  const osStatus_t rx_status = osMessageQueueGet(
+	      rx_queue_handle,
+	      &received_byte,
+	      NULL,
+	      1U);
+
+	  if(rx_status == osOK)
+	  {
+		  const command_assembler_status_t assembler_status =   command_byte_processing(&cli_assember_state, received_byte);
+
+
+		  switch(assembler_status)
+		  {
+		  case COMMAND_NOT_COMPLETE:
+			  //Nothing
+			  break;
+
+		  case COMMAND_IS_AVAILABLE:
+			  printf("Received command: %s\r\n", cli_assember_state.command);
+			  control_command_t control_command;
+			  if (!command_parser(cli_assember_state.command, &control_command))
+			  {
+			      printf("Unknown command or invalid argument\r\n");
+			  }
+			  else
+			  {
+			      handle_control_command(
+			          &control_command, &report, report_available);
+			  }
+
+			  (void)command_assembler_init(&cli_assember_state);
+			  break;
+		  case COMMAND_IS_DISCARDED:
+			  printf("Command too long \r\n");
+			  break;
+
+		  case COMMAND_INVALID_ARGUMENT:
+			  Error_Handler();
+			  break;
+
+		  default:Error_Handler();
+		  break;
+		  }
+
+	  }
+	  else if (rx_status != osErrorTimeout)
+	  {
+		  Error_Handler();
+	  }
 	  const osStatus_t queue_status =
 	      osMessageQueueGet(
 	          telemetry_queue_handle,
 	          &report,
 	          NULL,
-	          10U);
+	          0U);
 	  if (queue_status == osOK)
 	  {
-	      printf(
-	          "CM S=%u Q=%.2f M=%.2f E=%lu D=%lu TD=%lu\r\n",
-	          (unsigned int)report.state,
-	          report.severity_score,
-	          report.max_magnitude_mps2,
-	          (unsigned long)report.consecutive_sensor_errors,
-	          (unsigned long)report.dropped_sensor_samples,
-	          (unsigned long)report.dropped_telemetry_reports);
+		  report_available = true;
+//	      printf(
+//	          "Condition monitor State=%u Severity score=%.2f Max magnitude=%.2f Consecutive sensor errors=%lu Sensor dropped samples=%lu Telemetry dropped reports=%lu\r\n",
+//	          (unsigned int)report.state,
+//	          report.severity_score,
+//	          report.max_magnitude_mps2,
+//	          (unsigned long)report.consecutive_sensor_errors,
+//	          (unsigned long)report.dropped_sensor_samples,
+//	          (unsigned long)report.dropped_telemetry_reports);
 	  }
 
-	  else if (queue_status != osErrorTimeout)
+	  else if (queue_status != osErrorResource)
 	  {
 	      Error_Handler();
 	  }
