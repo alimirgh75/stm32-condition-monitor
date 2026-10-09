@@ -103,3 +103,15 @@ uint32_t sensor_sample_buffer_get_overrun_count(
 
     return buffer->overrun_count;
 }
+
+void sensor_sample_buffer_clear(
+    sensor_sample_buffer_t *buffer)
+{
+    if (buffer == NULL)
+    {
+        return;
+    }
+	buffer->write_index = 0U;
+	buffer->read_index = 0U;
+	buffer->count = 0U;
+}

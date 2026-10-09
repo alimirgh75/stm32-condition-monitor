@@ -70,7 +70,12 @@ float condition_monitor_get_severity_score(
 void condition_monitor_reset(
     condition_monitor_t *monitor);
 
+bool condition_monitor_set_impact_reference(
+    condition_monitor_t *monitor,
+    float impact_reference_mps2);
 
+float condition_monitor_get_impact_reference(
+    const condition_monitor_t *monitor);
 
 
 #endif /* INC_CONDITION_MONITOR_H_ */

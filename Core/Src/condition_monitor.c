@@ -207,3 +207,30 @@ static bool condition_monitor_config_is_valid(
 
 	return true;
 }
+
+
+bool condition_monitor_set_impact_reference(
+    condition_monitor_t *monitor,
+    float impact_reference_mps2)
+{
+    if ((monitor == NULL) ||
+        !isfinite(impact_reference_mps2) ||
+        (impact_reference_mps2 <= 0.0f))
+    {
+        return false;
+    }
+
+    monitor->config.impact_reference_mps2 = impact_reference_mps2;
+    return true;
+}
+
+float condition_monitor_get_impact_reference(
+    const condition_monitor_t *monitor)
+{
+    if (monitor == NULL)
+    {
+        return 0.0f;
+    }
+
+    return monitor->config.impact_reference_mps2;
+}

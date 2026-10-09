@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -28,15 +29,49 @@
 #include "sensor_analysis_window.h"
 #include "sensor_acquisition.h"
 #include "condition_monitor.h"
+
+#include "cli.h"
+//#include "cli_output.h"
+#include "control_command.h"
+//#include "uart_console.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+typedef enum
+{
+    ACQUISITION_STATE_STOPPED = 0,
+    ACQUISITION_STATE_RUNNING,
+    ACQUISITION_STATE_STOPPING,
+    ACQUISITION_STATE_RECONFIGURING,
+    ACQUISITION_STATE_STARTING,
+	ACQUISITION_STATE_FAULT
+} acquisition_control_state_t;
+typedef struct
+{
+    acquisition_control_state_t acquisition_state;
+    condition_state_t state;
+    float severity_score;
+
+    sensor_acceleration_time_features_t acceleration_features;
+    uint32_t completed_window_count;
+
+    uint32_t consecutive_sensor_errors;
+    uint32_t dropped_sensor_samples;
+    uint32_t dropped_telemetry_reports;
+} telemetry_report_t;
+
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define TELEMETRY_QUEUE_CAPACITY 4U
+#define UART_RX_QUEUE_CAPACITY     64U
+#define CONTROL_COMMAND_QUEUE_CAPACITY 2U
+
+#define CONTROL_RESPONSE_TIMEOUT_TICKS 250U
+#define STOP_DMA_TIMEOUT_MS 50U
 
 /* USER CODE END PD */
 
@@ -58,6 +93,22 @@ TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart2;
+
+/* Definitions for acquisitionTask */
+osThreadId_t acquisitionTaskHandle;
+const osThreadAttr_t acquisitionTask_attributes = {
+  .name = "acquisitionTask",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for interfaceTask */
+osThreadId_t interfaceTaskHandle;
+const osThreadAttr_t interfaceTask_attributes = {
+  .name = "interfaceTask",
+  .stack_size = 750 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+
 
 /* USER CODE BEGIN PV */
 
@@ -94,8 +145,19 @@ static uint32_t dt_sample_count = 0U;
 static ism330dhcx_axes_t
     centered_accelerations[SENSOR_ANALYSIS_WINDOW_SIZE];
 static sensor_acceleration_time_features_t acceleration_features;
+static condition_monitor_t condition_monitor;
 
 
+
+static osMessageQueueId_t telemetry_queue_handle;
+static osMessageQueueId_t rx_queue_handle;
+static osMessageQueueId_t control_command_queue_handle;
+static osMessageQueueId_t control_response_queue_handle;
+
+static uint8_t uart_rx_byte;
+static volatile uint32_t uart_rx_dropped_byte_count = 0U;
+static volatile uint32_t uart_rx_rearm_error_count = 0U;
+static volatile bool uart_rx_restart_required = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -106,13 +168,20 @@ static void MX_TIM6_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
+void StartDefaultTask(void *argument);
+void StartTask02(void *argument);
+
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static void handle_control_command(
+    const control_command_t *command,
+    const telemetry_report_t *report,
+    bool report_available);
 /* USER CODE END 0 */
 
 /**
@@ -197,7 +266,7 @@ int main(void)
       .sensor_fault_consecutive_error_limit = 3U
   };
 
-  static condition_monitor_t condition_monitor;
+
   /* Step 1: Initialize the driver object. */
   sensor_status = ism330dhcx_init(
       &motion_sensor,
@@ -280,11 +349,6 @@ int main(void)
   {
       Error_Handler();
   }
-  condition_state_t last_reported_state = CONDITION_STATE_COUNT;
-
-  //Blink
-  uint32_t processed_timer_event_count=0U;
-  uint32_t blink_count = 0;
 
   if(HAL_TIM_Base_Start_IT(&htim6) != HAL_OK)
   {
@@ -292,8 +356,82 @@ int main(void)
   }
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  telemetry_queue_handle = osMessageQueueNew(
+      TELEMETRY_QUEUE_CAPACITY,
+      sizeof(telemetry_report_t),
+      NULL);
+
+  if (telemetry_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
+
+  rx_queue_handle = osMessageQueueNew(
+      UART_RX_QUEUE_CAPACITY,
+      sizeof(uint8_t),
+      NULL);
+  if (rx_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
+
+  control_command_queue_handle = osMessageQueueNew(
+      CONTROL_COMMAND_QUEUE_CAPACITY,
+      sizeof(control_command_t),
+      NULL);
+  if (control_command_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
+  control_response_queue_handle = osMessageQueueNew(
+      CONTROL_COMMAND_QUEUE_CAPACITY,
+      sizeof(control_response_t),
+      NULL);
+  if (control_response_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of acquisitionTask */
+  acquisitionTaskHandle = osThreadNew(StartDefaultTask, NULL, &acquisitionTask_attributes);
+
+  /* creation of interfaceTask */
+  interfaceTaskHandle = osThreadNew(StartTask02, NULL, &interfaceTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
   /* Initialize leds */
   BSP_LED_Init(LED_GREEN);
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -303,178 +441,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	bool has_new_window = false;
-	//DMA
-	const ism330dhcx_status_t status =
-	    sensor_acquisition_process(&sensor_acquisition);
-
-	if (status == ISM330DHCX_INVALID_ARGUMENT)
-	{
-	    /* Programming/configuration error. */
-	    Error_Handler();
-	}
-	else if (status != ISM330DHCX_OK)
-	{
-	    /* Count recoverable DMA-start errors too. */
-	    sensor_acquisition_on_error(&sensor_acquisition);
-	}
-
-
-	if (sensor_acquisition_get_sample(
-	        &sensor_acquisition,
-	        &raw_sample))
-	{
-	    (void)sensor_sample_buffer_push(
-	        &sensor_sample_buffer,
-	        &(raw_sample));
-	}
-
-
-
-	if (sensor_sample_buffer_pop(
-	        &sensor_sample_buffer,
-	        &raw_sample))
-	{
-
-
-	    if (previous_timestamp_us != 0U)
-	    {
-	        latest_dt_us =
-	            raw_sample.timestamp_us - previous_timestamp_us;
-
-	        if (latest_dt_us < min_dt_us)
-	        {
-	            min_dt_us = latest_dt_us;
-	        }
-
-	        if (latest_dt_us > max_dt_us)
-	        {
-	            max_dt_us = latest_dt_us;
-	        }
-
-	        sum_dt_us += latest_dt_us;
-	        ++dt_sample_count;
-	    }
-
-	    previous_timestamp_us = raw_sample.timestamp_us;
-	    /* convert raw_sample here */
-	    const ism330dhcx_status_t dma_conversion_status =
-	        ism330dhcx_convert_raw_sample(
-	            &motion_sensor,
-	            &raw_sample.data,
-	            &dma_converted_sample.data);
-
-	    if (dma_conversion_status != ISM330DHCX_OK)
-	    {
-	        Error_Handler();
-	    }
-
-	    dma_converted_sample.timestamp_us =
-	        raw_sample.timestamp_us;
-
-	    sensor_window_push(
-	        &sensor_window,
-	        &dma_converted_sample);
-
-	}
-
-	//Window consumption
-	if (sensor_window_is_ready(&sensor_window))
-	{
-
-	    if (!sensor_window_calculate_acceleration_features(
-	    	    &sensor_window,
-	    	    &acceleration_features,
-				centered_accelerations))
-	    {
-	        Error_Handler();
-	    }
-	    has_new_window = true;
-
-	    sensor_window_release(&sensor_window);
-
-	}
-
-	const condition_monitor_input_t condition_input =
-	{
-	    .has_new_window = has_new_window,
-
-	    .max_magnitude_mps2 =
-	        has_new_window
-	            ? acceleration_features.max_magnitude_mps2
-	            : 0.0f,
-
-	    .consecutive_sensor_errors =
-	        sensor_acquisition_get_consecutive_error_count(
-	            &sensor_acquisition)
-	};
-
-	if (!condition_monitor_update(
-	        &condition_monitor,
-	        &condition_input))
-	{
-	    Error_Handler();
-	}
-
-	const condition_state_t current_state =
-	    condition_monitor_get_state(&condition_monitor);
-
-	/*
-	 * Print every completed window so we can observe and tune the score.
-	 * Also print immediately if SENSOR_FAULT occurs without a new window.
-	 */
-	if (has_new_window ||
-	    (current_state != last_reported_state))
-	{
-	    printf(
-	        "CM S=%u Q=%.2f M=%.2f E=%lu D=%lu\r\n",
-	        (unsigned int)current_state,
-	        condition_monitor_get_severity_score(
-	            &condition_monitor),
-	        has_new_window
-	            ? acceleration_features.max_magnitude_mps2
-	            : 0.0f,
-	        (unsigned long)
-	            condition_input.consecutive_sensor_errors,
-	        (unsigned long)
-	            sensor_acquisition_get_dropped_sample_count(
-	                &sensor_acquisition));
-
-	    last_reported_state = current_state;
-	}
-	//BLINKER CODE BELOW
-
-    const uint32_t produced_timer_events = timer_event_count;
-
-    //Check the button, toggles the enabled flag
-    if(button_pressed_event)
-    {
-    	button_pressed_event = false;
-    	blinking_enabled = !blinking_enabled;
-
-    	if(!blinking_enabled)
-    	{
-    		HAL_GPIO_WritePin(LED2_GPIO_PORT, LED2_PIN, GPIO_PIN_RESET);
-    	}
-    }
-
-    if (processed_timer_event_count != produced_timer_events)
-    {
-
-
-        ++processed_timer_event_count;
-
-        if (blinking_enabled)
-        {
-            HAL_GPIO_TogglePin(
-                LED2_GPIO_PORT,
-                LED2_PIN);
-
-            ++blink_count;
-        }
-    }
-
-
 
   }
   /* USER CODE END 3 */
@@ -706,7 +672,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
@@ -742,7 +708,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -752,16 +718,217 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+static void print_status_report(const telemetry_report_t *report)
 {
-	//Timer that gives the toggle frequency
-	if(htim->Instance == TIM6)
-	{
-		++timer_event_count;
-	}
+    if (report == NULL)
+    {
+        return;
+    }
 
+    const char *acquisition_name = "UNKNOWN";
+    const char *condition_name = "UNKNOWN";
+    const char *assessment = "Condition state is unavailable.";
+
+    switch (report->acquisition_state)
+    {
+    case ACQUISITION_STATE_STOPPED:
+        acquisition_name = "STOPPED";
+        break;
+
+    case ACQUISITION_STATE_RUNNING:
+        acquisition_name = "RUNNING";
+        break;
+
+    case ACQUISITION_STATE_STOPPING:
+        acquisition_name = "STOPPING";
+        break;
+
+    case ACQUISITION_STATE_RECONFIGURING:
+        acquisition_name = "RECONFIGURING";
+        break;
+
+    case ACQUISITION_STATE_STARTING:
+        acquisition_name = "STARTING";
+        break;
+
+    case ACQUISITION_STATE_FAULT:
+        acquisition_name = "FAULT";
+        break;
+
+    default:
+        break;
+    }
+
+    switch (report->state)
+    {
+    case CONDITION_STATE_NORMAL:
+        condition_name = "NORMAL";
+        assessment = "Accumulated severity is in the normal state.";
+        break;
+
+    case CONDITION_STATE_WARNING:
+        condition_name = "WARNING";
+        assessment = "Accumulated severity is in the warning state.";
+        break;
+
+    case CONDITION_STATE_ALARM:
+        condition_name = "ALARM";
+        assessment = "Accumulated severity is in the alarm state.";
+        break;
+
+    case CONDITION_STATE_SENSOR_FAULT:
+        condition_name = "SENSOR FAULT";
+        assessment = "The sensor fault state is latched until reset.";
+        break;
+
+    default:
+        break;
+    }
+
+    printf(
+        "\r\n"
+        "STM32 CONDITION MONITOR\r\n"
+        "==================================================\r\n"
+        "Acquisition state : %s\r\n"
+        "Condition state   : %s\r\n"
+        "Severity score    : %.2f\r\n"
+        "Completed windows : %lu\r\n"
+        "Window size       : %lu samples\r\n",
+        acquisition_name,
+        condition_name,
+        report->severity_score,
+        (unsigned long)report->completed_window_count,
+        (unsigned long)SENSOR_ANALYSIS_WINDOW_SIZE);
+
+    if (report->completed_window_count == 0U)
+    {
+        printf("\r\nNo complete measurement window available yet.\r\n");
+    }
+    else
+    {
+        printf(
+            "Measurement data  : %s\r\n",
+            (report->acquisition_state == ACQUISITION_STATE_RUNNING)
+                ? "Latest completed window"
+                : "Retained last window; acquisition is not running");
+
+        const sensor_acceleration_time_features_t *features =
+            &report->acceleration_features;
+
+        printf(
+            "\r\n"
+            "ACCELERATION (mean removed)\r\n"
+            "--------------------------------------------------\r\n"
+            "Axis       RMS (m/s^2)     Absolute peak (m/s^2)\r\n"
+            " X         %10.3f          %10.3f\r\n"
+            " Y         %10.3f          %10.3f\r\n"
+            " Z         %10.3f          %10.3f\r\n"
+            "--------------------------------------------------\r\n"
+            "Maximum magnitude : %.3f m/s^2\r\n"
+            "Peak sample index : %lu (zero based)\r\n"
+            "Peak DRDY time    : %lu us\r\n",
+            features->rms_mps2.x,
+            features->peak_mps2.x,
+            features->rms_mps2.y,
+            features->peak_mps2.y,
+            features->rms_mps2.z,
+            features->peak_mps2.z,
+            features->max_magnitude_mps2,
+            (unsigned long)features->max_magnitude_index,
+            (unsigned long)features->max_magnitude_timestamp_us);
+    }
+
+    printf(
+        "\r\n"
+        "DATA INTEGRITY\r\n"
+        "--------------------------------------------------\r\n"
+        "Consecutive sensor errors : %lu\r\n"
+        "Dropped sensor samples    : %lu\r\n"
+        "Dropped telemetry reports : %lu\r\n"
+        "\r\n"
+        "ASSESSMENT\r\n"
+        "%s\r\n"
+        "==================================================\r\n\r\n",
+        (unsigned long)report->consecutive_sensor_errors,
+        (unsigned long)report->dropped_sensor_samples,
+        (unsigned long)report->dropped_telemetry_reports,
+        assessment);
 }
 
+static void handle_control_command(
+    const control_command_t *command,
+    const telemetry_report_t *report,
+    bool report_available)
+{
+	if((command == NULL) || (report == NULL)){return;}
+
+	switch(command->command_type){
+	case CONTROL_COMMAND_HELP:
+	    printf(
+	        "Available commands:\r\n"
+	        "  help                         - Show this command list\r\n"
+	        "  get status                   - Show the latest monitoring report\r\n"
+		    "  start                        - Start acquisition\r\n"
+		    "  stop                         - Stop acquisition\r\n"
+		    "  get impact-reference         - Show the severity calculation reference\r\n"
+		    "  set impact-reference <mps2>   - Set reference acceleration in m/s^2\r\n"
+	        "\r\n"
+	        "Planned commands (not implemented yet):\r\n"
+	        "  get config                   - Show sensor and monitoring settings\r\n"
+	        "  get rate                     - Show configured sampling rates\r\n"
+	        "  set rate <hz>                - Request a supported sampling rate\r\n"
+
+	        "  get errors                   - Show sensor and UART error/drop counters\r\n"
+	        "  get version                  - Show firmware version\r\n"
+);
+		break;
+
+	case CONTROL_COMMAND_GET_STATUS:
+	{
+	    if (!report_available)
+	    {
+	        printf("No monitoring report available yet\r\n");
+	        break;
+	    }
+
+	    print_status_report(report);
+	    break;
+	}
+
+
+	case CONTROL_COMMAND_GET_IMPACT_REFERENCE:
+	case CONTROL_COMMAND_SET_IMPACT_REFERENCE:
+	case CONTROL_COMMAND_STOP:
+	case CONTROL_COMMAND_START:
+	{
+
+	    const osStatus_t queue_status =
+	        osMessageQueuePut(
+	            control_command_queue_handle,
+	            command,
+	            0U,  /* No message priority. */
+	            0U);
+		if(queue_status == osOK)
+		{
+			printf("Request submitted\r\n");
+
+		}
+		else if(queue_status == osErrorResource)
+		{
+			printf("Command queue full; request not submitted\r\n");
+
+		}
+		else
+		{
+			Error_Handler();
+
+		}
+		break;
+	}
+
+	default:printf("Command not implemented yet \r\n");
+	}
+}
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
 
@@ -807,8 +974,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if(hi2c->Instance == I2C1)
 	{
-		sensor_acquisition_on_dma_complete(
-		    &sensor_acquisition);
+		sensor_acquisition_on_dma_complete(&sensor_acquisition);
 
 	}
 }
@@ -824,7 +990,773 @@ void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 
 }
 
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    /* check which USART instance */
+	if (huart->Instance == USART2)
+	{
+
+	    //Message put on the queue
+	    const osStatus_t queue_status =
+	        osMessageQueuePut(
+	            rx_queue_handle,
+	            &uart_rx_byte,
+	            0U,  /* No message priority. */
+	            0U);
+
+	    if (queue_status == osErrorResource)
+	    {
+	        /* Queue was full. */
+	        ++uart_rx_dropped_byte_count;
+	    }
+
+		if (HAL_UART_Receive_IT(
+		        huart,
+		        &uart_rx_byte,
+		        sizeof(uart_rx_byte)) != HAL_OK)
+		{
+			++uart_rx_rearm_error_count;
+			uart_rx_restart_required = true;
+		    return;
+		}
+
+	}
+}
+
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+	   (void)argument;
+
+	    condition_state_t last_reported_state =
+	        CONDITION_STATE_COUNT;
+	    uint32_t dropped_telemetry_reports = 0U;
+	    uint32_t dropped_control_response_count = 0U;
+	    acquisition_control_state_t acquisition_state =
+	        ACQUISITION_STATE_RUNNING;
+	    control_command_t pending_stop_request;
+	    bool stop_response_pending = false;
+	    ism330dhcx_sensor_config_t running_sensor_config =
+	        motion_sensor.sensor_config;
+	    uint32_t stop_started_ms = 0U;
+	    acquisition_control_state_t last_reported_acquisition_state =
+	        acquisition_state;
+  /* Infinite loop */
+  for(;;)
+  {
+
+
+		bool has_new_window = false;
+		//DMA
+		const ism330dhcx_status_t status =
+		    sensor_acquisition_process(&sensor_acquisition);
+
+		if (status == ISM330DHCX_INVALID_ARGUMENT)
+		{
+		    /* Programming/configuration error. */
+		    Error_Handler();
+		}
+		else if (status != ISM330DHCX_OK)
+		{
+		    /* Count recoverable DMA-start errors too. */
+		    sensor_acquisition_on_error(&sensor_acquisition);
+		}
+
+
+		if (sensor_acquisition_get_sample(
+		        &sensor_acquisition,
+		        &raw_sample))
+		{
+			if(acquisition_state == ACQUISITION_STATE_RUNNING)
+			{
+			    (void)sensor_sample_buffer_push(
+			        &sensor_sample_buffer,
+			        &(raw_sample));
+			}
+
+		}
+
+
+
+		/*
+		 * The DMA pipeline has now finished and its final sample was discarded.
+		 */
+		if ((acquisition_state == ACQUISITION_STATE_STOPPING) &&
+		    sensor_acquisition_is_quiescent(&sensor_acquisition))
+		{
+		    /*
+		     * Next:		     *
+		     * - power down accelerometer and gyro;
+		     * - queue the response;
+		     * - change state to STOPPED.
+		     */
+			sensor_sample_buffer_clear(&sensor_sample_buffer);
+			sensor_window_release(&sensor_window);
+			previous_timestamp_us = 0U;
+
+			ism330dhcx_sensor_config_t stopped_config =
+			    running_sensor_config;
+			stopped_config.accel_odr = ISM330DHCX_ACCEL_ODR_PWR_DOWN;
+			stopped_config.gyro_odr = ISM330DHCX_GYRO_ODR_PWR_DOWN;
+
+			const ism330dhcx_status_t stop_status =
+			    ism330dhcx_configure_sensor(
+			        &motion_sensor,
+			        &stopped_config);
+
+			if(stop_status == ISM330DHCX_OK)
+			{
+				acquisition_state = ACQUISITION_STATE_STOPPED;
+			}
+			else
+			{
+				sensor_acquisition_on_error(&sensor_acquisition);
+				acquisition_state = ACQUISITION_STATE_FAULT;
+			}
+
+
+		}
+		else if ((acquisition_state == ACQUISITION_STATE_STOPPING) &&
+		         ((uint32_t)(HAL_GetTick() - stop_started_ms) >=
+		          STOP_DMA_TIMEOUT_MS))
+		{
+		    sensor_sample_buffer_clear(&sensor_sample_buffer);
+		    sensor_window_release(&sensor_window);
+		    previous_timestamp_us = 0U;
+
+		    acquisition_state = ACQUISITION_STATE_FAULT;
+		}
+
+		if (stop_response_pending &&
+		    ((acquisition_state == ACQUISITION_STATE_STOPPED) ||
+		     (acquisition_state == ACQUISITION_STATE_FAULT)))
+		{
+			const control_response_t response =
+			{
+			    .command = pending_stop_request,
+				.success =
+				    (acquisition_state == ACQUISITION_STATE_STOPPED)
+			};
+		    const osStatus_t response_status =
+		          osMessageQueuePut(
+		              control_response_queue_handle,
+		              &response,
+		              0U,
+		              0U);
+
+		    if (response_status == osErrorResource)
+		    {
+		        ++dropped_control_response_count;
+		    }
+		    else if (response_status != osOK)
+		    {
+		        Error_Handler();
+		    }
+		    stop_response_pending = false;
+		}
+
+		if ((acquisition_state == ACQUISITION_STATE_RUNNING) &&
+				sensor_sample_buffer_pop(
+		        &sensor_sample_buffer,
+		        &raw_sample))
+		{
+
+
+		    if (previous_timestamp_us != 0U)
+		    {
+		        latest_dt_us =
+		            raw_sample.timestamp_us - previous_timestamp_us;
+
+		        if (latest_dt_us < min_dt_us)
+		        {
+		            min_dt_us = latest_dt_us;
+		        }
+
+		        if (latest_dt_us > max_dt_us)
+		        {
+		            max_dt_us = latest_dt_us;
+		        }
+
+		        sum_dt_us += latest_dt_us;
+		        ++dt_sample_count;
+		    }
+
+		    previous_timestamp_us = raw_sample.timestamp_us;
+		    /* convert raw_sample here */
+		    const ism330dhcx_status_t dma_conversion_status =
+		        ism330dhcx_convert_raw_sample(
+		            &motion_sensor,
+		            &raw_sample.data,
+		            &dma_converted_sample.data);
+
+		    if (dma_conversion_status != ISM330DHCX_OK)
+		    {
+		        Error_Handler();
+		    }
+
+		    dma_converted_sample.timestamp_us =
+		        raw_sample.timestamp_us;
+
+		    sensor_window_push(
+		        &sensor_window,
+		        &dma_converted_sample);
+
+		}
+
+		//Window consumption
+		if ((acquisition_state == ACQUISITION_STATE_RUNNING) &&
+				sensor_window_is_ready(&sensor_window))
+		{
+
+		    if (!sensor_window_calculate_acceleration_features(
+		    	    &sensor_window,
+		    	    &acceleration_features,
+					centered_accelerations))
+		    {
+		        Error_Handler();
+		    }
+		    has_new_window = true;
+
+		    sensor_window_release(&sensor_window);
+
+		}
+
+		const condition_monitor_input_t condition_input =
+		{
+		    .has_new_window = has_new_window,
+
+		    .max_magnitude_mps2 =
+		        has_new_window
+		            ? acceleration_features.max_magnitude_mps2
+		            : 0.0f,
+
+		    .consecutive_sensor_errors =
+		        sensor_acquisition_get_consecutive_error_count(
+		            &sensor_acquisition)
+		};
+
+		if (!condition_monitor_update(
+		        &condition_monitor,
+		        &condition_input))
+		{
+		    Error_Handler();
+		}
+
+		const condition_state_t current_state =
+		    condition_monitor_get_state(&condition_monitor);
+
+		/*
+		 * Prints a report of sensor acquisition window
+		 */
+		if (has_new_window ||
+		    (current_state != last_reported_state) ||
+		    (acquisition_state != last_reported_acquisition_state))
+		{
+
+			const telemetry_report_t report =
+			{
+			    .acquisition_state = acquisition_state,
+
+			    .state = current_state,
+
+			    .severity_score =
+			        condition_monitor_get_severity_score(
+			            &condition_monitor),
+
+			    .acceleration_features = acceleration_features,
+
+			    .completed_window_count =
+			        sensor_window_get_completed_count(
+			            &sensor_window),
+
+			    .consecutive_sensor_errors =
+			        condition_input.consecutive_sensor_errors,
+
+			    .dropped_sensor_samples =
+			        sensor_acquisition_get_dropped_sample_count(
+			            &sensor_acquisition),
+
+			    .dropped_telemetry_reports =
+			        dropped_telemetry_reports
+			};
+
+		    //Message put on the queue
+		    const osStatus_t queue_status =
+		        osMessageQueuePut(
+		            telemetry_queue_handle,
+		            &report,
+		            0U,  /* No message priority. */
+		            0U);
+		    if (queue_status == osOK)
+		    {
+		    	last_reported_state = current_state;
+		    	last_reported_acquisition_state = acquisition_state;
+		    }
+		    else if (queue_status == osErrorResource)
+		    {
+		        /* Queue was full. */
+		        ++dropped_telemetry_reports;
+		    }
+		    else
+		    {
+		        /* Invalid queue or another programming error. */
+		        Error_Handler();
+		    }
+		}
+		control_command_t request;
+		const osStatus_t control_status = osMessageQueueGet(
+		      control_command_queue_handle,
+		      &request,
+		      NULL,
+		      0U);
+
+		  if (control_status == osOK)
+		  {
+			  switch(request.command_type)
+			  {
+			  case CONTROL_COMMAND_SET_RATE:
+				  //use request.rate_hz
+				  break;
+
+			  case CONTROL_COMMAND_SET_IMPACT_REFERENCE:
+			  {
+			      const bool success =
+			          condition_monitor_set_impact_reference(
+			              &condition_monitor,
+			              request.impact_reference_mps2);
+
+			      const control_response_t response =
+			      {
+			          .command = request,
+			          .success = success
+			      };
+
+			      const osStatus_t response_status =
+			          osMessageQueuePut(
+			              control_response_queue_handle,
+			              &response,
+			              0U,
+			              0U);
+
+			      if (response_status == osErrorResource)
+			      {
+			          ++dropped_control_response_count;
+			      }
+			      else if (response_status != osOK)
+			      {
+			          Error_Handler();
+			      }
+
+			      break;
+			  }
+			  case CONTROL_COMMAND_GET_IMPACT_REFERENCE:
+			  {
+			      control_response_t response =
+			      {
+			          .command = request,
+			          .success = true
+			      };
+
+			      response.command.impact_reference_mps2 =
+			          condition_monitor_get_impact_reference(
+			              &condition_monitor);
+
+			      const osStatus_t response_status =
+			          osMessageQueuePut(
+			              control_response_queue_handle,
+			              &response,
+			              0U,
+			              0U);
+
+			      if (response_status == osErrorResource)
+			      {
+			          ++dropped_control_response_count;
+			      }
+			      else if (response_status != osOK)
+			      {
+			          Error_Handler();
+			      }
+
+			      break;
+			  }
+
+
+			  case CONTROL_COMMAND_START:
+			  {
+			      if (acquisition_state == ACQUISITION_STATE_STOPPED)
+			      {
+
+			          const ism330dhcx_status_t start_status =
+			              ism330dhcx_configure_sensor(
+			                  &motion_sensor,
+			                  &running_sensor_config);
+
+						if(start_status == ISM330DHCX_OK)
+						{
+							if(sensor_acquisition_discard_pending_drdy(&sensor_acquisition))
+							{
+								acquisition_state = ACQUISITION_STATE_RUNNING;
+						        sensor_acquisition_set_new_reads_enabled(
+						              &sensor_acquisition,
+						              true);
+							}
+							else
+							{
+							    sensor_acquisition_set_new_reads_enabled(
+							        &sensor_acquisition,
+							        false);
+
+							    acquisition_state = ACQUISITION_STATE_FAULT;
+							}
+
+						}
+						else
+						{
+							sensor_acquisition_on_error(&sensor_acquisition);
+							acquisition_state = ACQUISITION_STATE_FAULT;
+						}
+
+			      }
+
+		    	  const control_response_t response =
+		    	  {
+		    	      .command = request,
+					  .success =
+					      (acquisition_state == ACQUISITION_STATE_RUNNING)
+		    	  };
+			      const osStatus_t response_status =
+			          osMessageQueuePut(
+			              control_response_queue_handle,
+			              &response,
+			              0U,
+			              0U);
+
+			      if (response_status == osErrorResource)
+			      {
+			          ++dropped_control_response_count;
+			      }
+			      else if (response_status != osOK)
+			      {
+			          Error_Handler();
+			      }
+
+				  break;
+			  }
+			  case CONTROL_COMMAND_STOP:
+			  {
+			      if (acquisition_state == ACQUISITION_STATE_RUNNING)
+			      {
+			          sensor_acquisition_set_new_reads_enabled(
+			              &sensor_acquisition,
+			              false);
+			          stop_started_ms = HAL_GetTick();
+			          acquisition_state = ACQUISITION_STATE_STOPPING;
+			          pending_stop_request = request;
+			          stop_response_pending = true;
+			      }
+			      else
+			      {
+			    	  const control_response_t response =
+			    	  {
+			    	      .command = request,
+						  .success =
+						      (acquisition_state == ACQUISITION_STATE_STOPPED)
+			    	  };
+				      const osStatus_t response_status =
+				          osMessageQueuePut(
+				              control_response_queue_handle,
+				              &response,
+				              0U,
+				              0U);
+
+				      if (response_status == osErrorResource)
+				      {
+				          ++dropped_control_response_count;
+				      }
+				      else if (response_status != osOK)
+				      {
+				          Error_Handler();
+				      }
+			      }
+
+			      break;
+			  }
+
+			  default:
+				  break;
+			  }
+		  }
+		  else if (control_status != osErrorResource)
+		  {
+		      Error_Handler();
+		  }
+
+    osDelay(1U);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartTask02 */
+/**
+* @brief Function implementing the interfaceTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask02 */
+void StartTask02(void *argument)
+{
+  /* USER CODE BEGIN StartTask02 */
+	(void)argument;
+	uint32_t processed_timer_event_count = 0U;
+
+	telemetry_report_t report = {0};
+	bool report_available = false;
+
+	if (HAL_UART_Receive_IT(
+	        &huart2,
+	        &uart_rx_byte,
+	        sizeof(uart_rx_byte)) != HAL_OK)
+	{
+	    Error_Handler();
+	}
+	static command_assembler_state_t cli_assember_state;
+	(void)command_assembler_init(&cli_assember_state);
+  /* Infinite loop */
+  for(;;)
+  {
+
+	  const osStatus_t queue_status =
+	      osMessageQueueGet(
+	          telemetry_queue_handle,
+	          &report,
+	          NULL,
+	          0U);
+	  if (queue_status == osOK)
+	  {
+		  report_available = true;
+
+	  }
+
+	  else if (queue_status != osErrorResource)
+	  {
+	      Error_Handler();
+	  }
+
+	  uint8_t received_byte;
+
+	  const osStatus_t rx_status = osMessageQueueGet(
+	      rx_queue_handle,
+	      &received_byte,
+	      NULL,
+	      1U);
+
+	  if(rx_status == osOK)
+	  {
+		  const command_assembler_status_t assembler_status =   command_byte_processing(&cli_assember_state, received_byte);
+
+
+		  switch(assembler_status)
+		  {
+		  case COMMAND_NOT_COMPLETE:
+			  //Nothing
+			  break;
+
+		  case COMMAND_IS_AVAILABLE:
+			  printf("Received command: %s\r\n", cli_assember_state.command);
+			  control_command_t control_command;
+			  if (!command_parser(cli_assember_state.command, &control_command))
+			  {
+			      printf("Unknown command or invalid argument\r\n");
+			  }
+			  else
+			  {
+			      handle_control_command(
+			          &control_command, &report, report_available);
+			  }
+
+			  (void)command_assembler_init(&cli_assember_state);
+			  break;
+		  case COMMAND_IS_DISCARDED:
+			  printf("Command too long \r\n");
+			  break;
+
+		  case COMMAND_INVALID_ARGUMENT:
+			  Error_Handler();
+			  break;
+
+		  default:Error_Handler();
+		  break;
+		  }
+
+	  }
+	  else if (rx_status != osErrorTimeout)
+	  {
+		  Error_Handler();
+	  }
+
+	  control_response_t response;
+
+	  const osStatus_t response_status =
+	      osMessageQueueGet(
+	          control_response_queue_handle,
+	          &response,
+	          NULL,
+	          0U);
+
+	  if (response_status == osOK)
+	  {
+	      /* Inspect response.command.command_type and print the result. */
+		  switch(response.command.command_type)
+		  {
+		  case CONTROL_COMMAND_SET_IMPACT_REFERENCE:
+			    if (response.success)
+			    {
+			        printf(
+			            "Impact reference applied: %.3f m/s^2\r\n",
+			            response.command.impact_reference_mps2);
+			    }
+			    else
+			    {
+			        printf(
+			            "Impact reference rejected: %.3f m/s^2\r\n",
+			            response.command.impact_reference_mps2);
+			    }
+			  break;
+
+		  case CONTROL_COMMAND_GET_IMPACT_REFERENCE:
+		      if (response.success)
+		      {
+		          printf(
+		              "Impact reference: %.3f m/s^2\r\n",
+		              response.command.impact_reference_mps2);
+		      }
+		      else
+		      {
+		          printf("Unable to read impact reference\r\n");
+		      }
+		      break;
+
+		  case CONTROL_COMMAND_SET_RATE:
+			    if (response.success)
+			    {
+			        printf(
+			            "Impact reference applied: %.3f m/s^2\r\n",
+			            response.command.rate_hz);
+			    }
+			    else
+			    {
+			        printf(
+			            "Impact reference rejected: %.3f m/s^2\r\n",
+			            response.command.rate_hz);
+			    }
+			  break;
+
+		  case CONTROL_COMMAND_STOP:
+		      if (response.success)
+		      {
+		          printf("Acquisition stopped\r\n");
+		      }
+		      else
+		      {
+		    	  printf("Stop request rejected or failed\r\n");
+		      }
+		      break;
+		  case CONTROL_COMMAND_START:
+		      if (response.success)
+		      {
+		          printf("Acquisition started\r\n");
+		      }
+		      else
+		      {
+		    	  printf("Start request rejected or failed\r\n");
+		      }
+		      break;
+
+
+		  default:printf(
+		            "Unsupported Command requested!\r\n");
+
+		  }
+	  }
+	  else if (response_status != osErrorResource)
+	  {
+	      Error_Handler();
+	  }
+
+
+
+		//BLINKER CODE BELOW
+
+	  const uint32_t produced_timer_events = timer_event_count;
+
+	    //Check the button, toggles the enabled flag
+	    if(button_pressed_event)
+	    {
+	    	button_pressed_event = false;
+	    	blinking_enabled = !blinking_enabled;
+
+	    	if(!blinking_enabled)
+	    	{
+	    		HAL_GPIO_WritePin(LED2_GPIO_PORT, LED2_PIN, GPIO_PIN_RESET);
+	    	}
+	    }
+
+	    if (processed_timer_event_count != produced_timer_events)
+	    {
+
+
+	        ++processed_timer_event_count;
+
+	        if (blinking_enabled)
+	        {
+	            HAL_GPIO_TogglePin(
+	                LED2_GPIO_PORT,
+	                LED2_PIN);
+
+
+	        }
+	    }
+
+  }
+  /* USER CODE END StartTask02 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM7 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+	//Timer that gives the toggle frequency
+	if(htim->Instance == TIM6)
+	{
+		++timer_event_count;
+	}
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM7)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
