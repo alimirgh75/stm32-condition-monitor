@@ -38,16 +38,6 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef struct
-{
-    condition_state_t state;
-    float severity_score;
-    float max_magnitude_mps2;
-    uint32_t consecutive_sensor_errors;
-    uint32_t dropped_sensor_samples;
-    uint32_t dropped_telemetry_reports;
-} telemetry_report_t;
-
 typedef enum
 {
     ACQUISITION_STATE_STOPPED = 0,
@@ -57,6 +47,21 @@ typedef enum
     ACQUISITION_STATE_STARTING,
 	ACQUISITION_STATE_FAULT
 } acquisition_control_state_t;
+typedef struct
+{
+    acquisition_control_state_t acquisition_state;
+    condition_state_t state;
+    float severity_score;
+
+    sensor_acceleration_time_features_t acceleration_features;
+    uint32_t completed_window_count;
+
+    uint32_t consecutive_sensor_errors;
+    uint32_t dropped_sensor_samples;
+    uint32_t dropped_telemetry_reports;
+} telemetry_report_t;
+
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -713,6 +718,143 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+static void print_status_report(const telemetry_report_t *report)
+{
+    if (report == NULL)
+    {
+        return;
+    }
+
+    const char *acquisition_name = "UNKNOWN";
+    const char *condition_name = "UNKNOWN";
+    const char *assessment = "Condition state is unavailable.";
+
+    switch (report->acquisition_state)
+    {
+    case ACQUISITION_STATE_STOPPED:
+        acquisition_name = "STOPPED";
+        break;
+
+    case ACQUISITION_STATE_RUNNING:
+        acquisition_name = "RUNNING";
+        break;
+
+    case ACQUISITION_STATE_STOPPING:
+        acquisition_name = "STOPPING";
+        break;
+
+    case ACQUISITION_STATE_RECONFIGURING:
+        acquisition_name = "RECONFIGURING";
+        break;
+
+    case ACQUISITION_STATE_STARTING:
+        acquisition_name = "STARTING";
+        break;
+
+    case ACQUISITION_STATE_FAULT:
+        acquisition_name = "FAULT";
+        break;
+
+    default:
+        break;
+    }
+
+    switch (report->state)
+    {
+    case CONDITION_STATE_NORMAL:
+        condition_name = "NORMAL";
+        assessment = "Accumulated severity is in the normal state.";
+        break;
+
+    case CONDITION_STATE_WARNING:
+        condition_name = "WARNING";
+        assessment = "Accumulated severity is in the warning state.";
+        break;
+
+    case CONDITION_STATE_ALARM:
+        condition_name = "ALARM";
+        assessment = "Accumulated severity is in the alarm state.";
+        break;
+
+    case CONDITION_STATE_SENSOR_FAULT:
+        condition_name = "SENSOR FAULT";
+        assessment = "The sensor fault state is latched until reset.";
+        break;
+
+    default:
+        break;
+    }
+
+    printf(
+        "\r\n"
+        "STM32 CONDITION MONITOR\r\n"
+        "==================================================\r\n"
+        "Acquisition state : %s\r\n"
+        "Condition state   : %s\r\n"
+        "Severity score    : %.2f\r\n"
+        "Completed windows : %lu\r\n"
+        "Window size       : %lu samples\r\n",
+        acquisition_name,
+        condition_name,
+        report->severity_score,
+        (unsigned long)report->completed_window_count,
+        (unsigned long)SENSOR_ANALYSIS_WINDOW_SIZE);
+
+    if (report->completed_window_count == 0U)
+    {
+        printf("\r\nNo complete measurement window available yet.\r\n");
+    }
+    else
+    {
+        printf(
+            "Measurement data  : %s\r\n",
+            (report->acquisition_state == ACQUISITION_STATE_RUNNING)
+                ? "Latest completed window"
+                : "Retained last window; acquisition is not running");
+
+        const sensor_acceleration_time_features_t *features =
+            &report->acceleration_features;
+
+        printf(
+            "\r\n"
+            "ACCELERATION (mean removed)\r\n"
+            "--------------------------------------------------\r\n"
+            "Axis       RMS (m/s^2)     Absolute peak (m/s^2)\r\n"
+            " X         %10.3f          %10.3f\r\n"
+            " Y         %10.3f          %10.3f\r\n"
+            " Z         %10.3f          %10.3f\r\n"
+            "--------------------------------------------------\r\n"
+            "Maximum magnitude : %.3f m/s^2\r\n"
+            "Peak sample index : %lu (zero based)\r\n"
+            "Peak DRDY time    : %lu us\r\n",
+            features->rms_mps2.x,
+            features->peak_mps2.x,
+            features->rms_mps2.y,
+            features->peak_mps2.y,
+            features->rms_mps2.z,
+            features->peak_mps2.z,
+            features->max_magnitude_mps2,
+            (unsigned long)features->max_magnitude_index,
+            (unsigned long)features->max_magnitude_timestamp_us);
+    }
+
+    printf(
+        "\r\n"
+        "DATA INTEGRITY\r\n"
+        "--------------------------------------------------\r\n"
+        "Consecutive sensor errors : %lu\r\n"
+        "Dropped sensor samples    : %lu\r\n"
+        "Dropped telemetry reports : %lu\r\n"
+        "\r\n"
+        "ASSESSMENT\r\n"
+        "%s\r\n"
+        "==================================================\r\n\r\n",
+        (unsigned long)report->consecutive_sensor_errors,
+        (unsigned long)report->dropped_sensor_samples,
+        (unsigned long)report->dropped_telemetry_reports,
+        assessment);
+}
+
 static void handle_control_command(
     const control_command_t *command,
     const telemetry_report_t *report,
@@ -726,43 +868,38 @@ static void handle_control_command(
 	        "Available commands:\r\n"
 	        "  help                         - Show this command list\r\n"
 	        "  get status                   - Show the latest monitoring report\r\n"
+		    "  start                        - Start acquisition\r\n"
+		    "  stop                         - Stop acquisition\r\n"
+		    "  get impact-reference         - Show the severity calculation reference\r\n"
+		    "  set impact-reference <mps2>   - Set reference acceleration in m/s^2\r\n"
 	        "\r\n"
 	        "Planned commands (not implemented yet):\r\n"
 	        "  get config                   - Show sensor and monitoring settings\r\n"
 	        "  get rate                     - Show configured sampling rates\r\n"
 	        "  set rate <hz>                - Request a supported sampling rate\r\n"
-	        "  get impact-reference         - Show the severity calculation reference\r\n"
-	        "  set impact-reference <mps2>   - Set reference acceleration in m/s^2\r\n"
+
 	        "  get errors                   - Show sensor and UART error/drop counters\r\n"
 	        "  get version                  - Show firmware version\r\n"
-	        "  start                        - Start acquisition\r\n"
-	        "  stop                         - Stop acquisition\r\n");
+);
 		break;
 
 	case CONTROL_COMMAND_GET_STATUS:
-		if(!report_available)
-		{
-			printf("No report available yet\r\n");
-			break;
-		}
-	    printf(
-	        "condition_state=%u\r\n"
-	        "severity_score=%.2f\r\n"
-	        "max_magnitude_mps2=%.3f\r\n"
-	        "consecutive_sensor_errors=%lu\r\n"
-	        "dropped_sensor_samples=%lu\r\n"
-	        "dropped_telemetry_reports=%lu\r\n",
-	        (unsigned int)report->state,
-	        report->severity_score,
-	        report->max_magnitude_mps2,
-	        (unsigned long)report->consecutive_sensor_errors,
-	        (unsigned long)report->dropped_sensor_samples,
-	        (unsigned long)report->dropped_telemetry_reports);
-		break;
+	{
+	    if (!report_available)
+	    {
+	        printf("No monitoring report available yet\r\n");
+	        break;
+	    }
+
+	    print_status_report(report);
+	    break;
+	}
+
 
 	case CONTROL_COMMAND_GET_IMPACT_REFERENCE:
 	case CONTROL_COMMAND_SET_IMPACT_REFERENCE:
 	case CONTROL_COMMAND_STOP:
+	case CONTROL_COMMAND_START:
 	{
 
 	    const osStatus_t queue_status =
@@ -911,6 +1048,8 @@ void StartDefaultTask(void *argument)
 	    ism330dhcx_sensor_config_t running_sensor_config =
 	        motion_sensor.sensor_config;
 	    uint32_t stop_started_ms = 0U;
+	    acquisition_control_state_t last_reported_acquisition_state =
+	        acquisition_state;
   /* Infinite loop */
   for(;;)
   {
@@ -1119,24 +1258,36 @@ void StartDefaultTask(void *argument)
 		 * Prints a report of sensor acquisition window
 		 */
 		if (has_new_window ||
-		    (current_state != last_reported_state))
+		    (current_state != last_reported_state) ||
+		    (acquisition_state != last_reported_acquisition_state))
 		{
 
-		    const telemetry_report_t report =
-		    {
-		    		.dropped_telemetry_reports = dropped_telemetry_reports,
-					.state = current_state,
-					.severity_score =
-							condition_monitor_get_severity_score(&condition_monitor),
-					.max_magnitude_mps2 =
-							has_new_window ? acceleration_features.max_magnitude_mps2 : 0.0f,
-					.consecutive_sensor_errors =
-							condition_input.consecutive_sensor_errors,
-					.dropped_sensor_samples =
-							sensor_acquisition_get_dropped_sample_count(&sensor_acquisition)
+			const telemetry_report_t report =
+			{
+			    .acquisition_state = acquisition_state,
 
+			    .state = current_state,
 
-		    };
+			    .severity_score =
+			        condition_monitor_get_severity_score(
+			            &condition_monitor),
+
+			    .acceleration_features = acceleration_features,
+
+			    .completed_window_count =
+			        sensor_window_get_completed_count(
+			            &sensor_window),
+
+			    .consecutive_sensor_errors =
+			        condition_input.consecutive_sensor_errors,
+
+			    .dropped_sensor_samples =
+			        sensor_acquisition_get_dropped_sample_count(
+			            &sensor_acquisition),
+
+			    .dropped_telemetry_reports =
+			        dropped_telemetry_reports
+			};
 
 		    //Message put on the queue
 		    const osStatus_t queue_status =
@@ -1147,7 +1298,8 @@ void StartDefaultTask(void *argument)
 		            0U);
 		    if (queue_status == osOK)
 		    {
-		        last_reported_state = current_state;
+		    	last_reported_state = current_state;
+		    	last_reported_acquisition_state = acquisition_state;
 		    }
 		    else if (queue_status == osErrorResource)
 		    {
@@ -1239,8 +1391,66 @@ void StartDefaultTask(void *argument)
 
 
 			  case CONTROL_COMMAND_START:
-				  break;
+			  {
+			      if (acquisition_state == ACQUISITION_STATE_STOPPED)
+			      {
 
+			          const ism330dhcx_status_t start_status =
+			              ism330dhcx_configure_sensor(
+			                  &motion_sensor,
+			                  &running_sensor_config);
+
+						if(start_status == ISM330DHCX_OK)
+						{
+							if(sensor_acquisition_discard_pending_drdy(&sensor_acquisition))
+							{
+								acquisition_state = ACQUISITION_STATE_RUNNING;
+						        sensor_acquisition_set_new_reads_enabled(
+						              &sensor_acquisition,
+						              true);
+							}
+							else
+							{
+							    sensor_acquisition_set_new_reads_enabled(
+							        &sensor_acquisition,
+							        false);
+
+							    acquisition_state = ACQUISITION_STATE_FAULT;
+							}
+
+						}
+						else
+						{
+							sensor_acquisition_on_error(&sensor_acquisition);
+							acquisition_state = ACQUISITION_STATE_FAULT;
+						}
+
+			      }
+
+		    	  const control_response_t response =
+		    	  {
+		    	      .command = request,
+					  .success =
+					      (acquisition_state == ACQUISITION_STATE_RUNNING)
+		    	  };
+			      const osStatus_t response_status =
+			          osMessageQueuePut(
+			              control_response_queue_handle,
+			              &response,
+			              0U,
+			              0U);
+
+			      if (response_status == osErrorResource)
+			      {
+			          ++dropped_control_response_count;
+			      }
+			      else if (response_status != osOK)
+			      {
+			          Error_Handler();
+			      }
+
+				  break;
+			  }
 			  case CONTROL_COMMAND_STOP:
 			  {
 			      if (acquisition_state == ACQUISITION_STATE_RUNNING)
@@ -1323,6 +1533,24 @@ void StartTask02(void *argument)
   /* Infinite loop */
   for(;;)
   {
+
+	  const osStatus_t queue_status =
+	      osMessageQueueGet(
+	          telemetry_queue_handle,
+	          &report,
+	          NULL,
+	          0U);
+	  if (queue_status == osOK)
+	  {
+		  report_available = true;
+
+	  }
+
+	  else if (queue_status != osErrorResource)
+	  {
+	      Error_Handler();
+	  }
+
 	  uint8_t received_byte;
 
 	  const osStatus_t rx_status = osMessageQueueGet(
@@ -1442,6 +1670,16 @@ void StartTask02(void *argument)
 		    	  printf("Stop request rejected or failed\r\n");
 		      }
 		      break;
+		  case CONTROL_COMMAND_START:
+		      if (response.success)
+		      {
+		          printf("Acquisition started\r\n");
+		      }
+		      else
+		      {
+		    	  printf("Start request rejected or failed\r\n");
+		      }
+		      break;
 
 
 		  default:printf(
@@ -1455,29 +1693,6 @@ void StartTask02(void *argument)
 	  }
 
 
-	  const osStatus_t queue_status =
-	      osMessageQueueGet(
-	          telemetry_queue_handle,
-	          &report,
-	          NULL,
-	          0U);
-	  if (queue_status == osOK)
-	  {
-		  report_available = true;
-//	      printf(
-//	          "Condition monitor State=%u Severity score=%.2f Max magnitude=%.2f Consecutive sensor errors=%lu Sensor dropped samples=%lu Telemetry dropped reports=%lu\r\n",
-//	          (unsigned int)report.state,
-//	          report.severity_score,
-//	          report.max_magnitude_mps2,
-//	          (unsigned long)report.consecutive_sensor_errors,
-//	          (unsigned long)report.dropped_sensor_samples,
-//	          (unsigned long)report.dropped_telemetry_reports);
-	  }
-
-	  else if (queue_status != osErrorResource)
-	  {
-	      Error_Handler();
-	  }
 
 		//BLINKER CODE BELOW
 

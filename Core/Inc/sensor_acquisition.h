@@ -84,4 +84,6 @@ void sensor_acquisition_set_new_reads_enabled(
 bool sensor_acquisition_is_quiescent(
     const sensor_acquisition_t *acquisition);
 
+bool sensor_acquisition_discard_pending_drdy(
+    sensor_acquisition_t *acquisition);
 #endif /* INC_SENSOR_ACQUISITION_H_ */

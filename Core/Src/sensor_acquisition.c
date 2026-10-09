@@ -252,3 +252,15 @@ bool sensor_acquisition_is_quiescent(
            (!acquisition->dma_complete) &&
            (!acquisition->sample_ready);
 }
+bool sensor_acquisition_discard_pending_drdy(
+    sensor_acquisition_t *acquisition)
+{
+    if ((acquisition == NULL) || (acquisition->new_reads_enabled)||
+    	    !sensor_acquisition_is_quiescent(acquisition))
+    {
+        return false;
+    }
+
+    acquisition->processed_drdy_event_count = acquisition->drdy_event_count;
+    return true;
+}
