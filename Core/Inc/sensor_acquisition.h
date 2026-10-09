@@ -33,6 +33,7 @@ typedef struct
     volatile bool dma_busy;
     volatile bool dma_complete;
     bool sample_ready;
+    bool new_reads_enabled;
 
 } sensor_acquisition_t;
 
@@ -74,6 +75,13 @@ void sensor_acquisition_on_error(
     sensor_acquisition_t *acquisition);
 
 uint32_t sensor_acquisition_get_dropped_sample_count(
+    const sensor_acquisition_t *acquisition);
+
+void sensor_acquisition_set_new_reads_enabled(
+    sensor_acquisition_t *acquisition,
+    bool enabled);
+
+bool sensor_acquisition_is_quiescent(
     const sensor_acquisition_t *acquisition);
 
 #endif /* INC_SENSOR_ACQUISITION_H_ */

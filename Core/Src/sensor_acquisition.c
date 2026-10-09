@@ -21,6 +21,7 @@ void sensor_acquisition_init(
     acquisition->drdy_event_count = 0U;
     acquisition->processed_drdy_event_count = 0U;
     acquisition->dma_complete_count = 0U;
+    acquisition->latest_drdy_timestamp_us = 0U;
 
 
     acquisition->dma_busy = false;
@@ -30,6 +31,7 @@ void sensor_acquisition_init(
     acquisition->error_count = 0U;
     acquisition->consecutive_error_count = 0U;
     acquisition->dropped_sample_count = 0U;
+    acquisition->new_reads_enabled = true;
 }
 
 
@@ -67,7 +69,8 @@ ism330dhcx_status_t sensor_acquisition_process(
     }
 
     /* Start a new DMA read if there is at least one unprocessed DRDY event. */
-    if ((!acquisition->dma_busy) &&
+    if ((acquisition->new_reads_enabled) &&
+    		(!acquisition->dma_busy) &&
         (!acquisition->dma_complete) &&
         (!acquisition->sample_ready) &&
         (acquisition->processed_drdy_event_count !=
@@ -222,4 +225,30 @@ uint32_t sensor_acquisition_get_dropped_sample_count(
     }
 
     return acquisition->dropped_sample_count;
+}
+
+void sensor_acquisition_set_new_reads_enabled(
+    sensor_acquisition_t *acquisition,
+    bool enabled)
+{
+    if (acquisition == NULL)
+    {
+        return;
+    }
+
+    acquisition->new_reads_enabled = enabled;
+}
+
+
+bool sensor_acquisition_is_quiescent(
+    const sensor_acquisition_t *acquisition)
+{
+    if (acquisition == NULL)
+    {
+        return false;
+    }
+
+    return (!acquisition->dma_busy) &&
+           (!acquisition->dma_complete) &&
+           (!acquisition->sample_ready);
 }

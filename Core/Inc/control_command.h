@@ -40,6 +40,11 @@ typedef struct{
 
 }control_command_t;
 
+typedef struct{
+	control_command_t command;
+	bool success;
+
+}control_response_t;
 
 bool command_parser(const char *command, control_command_t *control_command);
 

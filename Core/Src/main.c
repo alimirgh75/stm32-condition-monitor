@@ -47,14 +47,26 @@ typedef struct
     uint32_t dropped_sensor_samples;
     uint32_t dropped_telemetry_reports;
 } telemetry_report_t;
+
+typedef enum
+{
+    ACQUISITION_STATE_STOPPED = 0,
+    ACQUISITION_STATE_RUNNING,
+    ACQUISITION_STATE_STOPPING,
+    ACQUISITION_STATE_RECONFIGURING,
+    ACQUISITION_STATE_STARTING,
+	ACQUISITION_STATE_FAULT
+} acquisition_control_state_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define TELEMETRY_QUEUE_CAPACITY 4U
-
 #define UART_RX_QUEUE_CAPACITY     64U
+#define CONTROL_COMMAND_QUEUE_CAPACITY 2U
+
 #define CONTROL_RESPONSE_TIMEOUT_TICKS 250U
+#define STOP_DMA_TIMEOUT_MS 50U
 
 /* USER CODE END PD */
 
@@ -134,6 +146,9 @@ static condition_monitor_t condition_monitor;
 
 static osMessageQueueId_t telemetry_queue_handle;
 static osMessageQueueId_t rx_queue_handle;
+static osMessageQueueId_t control_command_queue_handle;
+static osMessageQueueId_t control_response_queue_handle;
+
 static uint8_t uart_rx_byte;
 static volatile uint32_t uart_rx_dropped_byte_count = 0U;
 static volatile uint32_t uart_rx_rearm_error_count = 0U;
@@ -368,6 +383,23 @@ int main(void)
       sizeof(uint8_t),
       NULL);
   if (rx_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
+
+  control_command_queue_handle = osMessageQueueNew(
+      CONTROL_COMMAND_QUEUE_CAPACITY,
+      sizeof(control_command_t),
+      NULL);
+  if (control_command_queue_handle == NULL)
+  {
+      Error_Handler();
+  }
+  control_response_queue_handle = osMessageQueueNew(
+      CONTROL_COMMAND_QUEUE_CAPACITY,
+      sizeof(control_response_t),
+      NULL);
+  if (control_response_queue_handle == NULL)
   {
       Error_Handler();
   }
@@ -728,6 +760,35 @@ static void handle_control_command(
 	        (unsigned long)report->dropped_telemetry_reports);
 		break;
 
+	case CONTROL_COMMAND_GET_IMPACT_REFERENCE:
+	case CONTROL_COMMAND_SET_IMPACT_REFERENCE:
+	case CONTROL_COMMAND_STOP:
+	{
+
+	    const osStatus_t queue_status =
+	        osMessageQueuePut(
+	            control_command_queue_handle,
+	            command,
+	            0U,  /* No message priority. */
+	            0U);
+		if(queue_status == osOK)
+		{
+			printf("Request submitted\r\n");
+
+		}
+		else if(queue_status == osErrorResource)
+		{
+			printf("Command queue full; request not submitted\r\n");
+
+		}
+		else
+		{
+			Error_Handler();
+
+		}
+		break;
+	}
+
 	default:printf("Command not implemented yet \r\n");
 	}
 }
@@ -776,8 +837,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
 	if(hi2c->Instance == I2C1)
 	{
-		sensor_acquisition_on_dma_complete(
-		    &sensor_acquisition);
+		sensor_acquisition_on_dma_complete(&sensor_acquisition);
 
 	}
 }
@@ -843,7 +903,14 @@ void StartDefaultTask(void *argument)
 	    condition_state_t last_reported_state =
 	        CONDITION_STATE_COUNT;
 	    uint32_t dropped_telemetry_reports = 0U;
-
+	    uint32_t dropped_control_response_count = 0U;
+	    acquisition_control_state_t acquisition_state =
+	        ACQUISITION_STATE_RUNNING;
+	    control_command_t pending_stop_request;
+	    bool stop_response_pending = false;
+	    ism330dhcx_sensor_config_t running_sensor_config =
+	        motion_sensor.sensor_config;
+	    uint32_t stop_started_ms = 0U;
   /* Infinite loop */
   for(;;)
   {
@@ -870,14 +937,96 @@ void StartDefaultTask(void *argument)
 		        &sensor_acquisition,
 		        &raw_sample))
 		{
-		    (void)sensor_sample_buffer_push(
-		        &sensor_sample_buffer,
-		        &(raw_sample));
+			if(acquisition_state == ACQUISITION_STATE_RUNNING)
+			{
+			    (void)sensor_sample_buffer_push(
+			        &sensor_sample_buffer,
+			        &(raw_sample));
+			}
+
 		}
 
 
 
-		if (sensor_sample_buffer_pop(
+		/*
+		 * The DMA pipeline has now finished and its final sample was discarded.
+		 */
+		if ((acquisition_state == ACQUISITION_STATE_STOPPING) &&
+		    sensor_acquisition_is_quiescent(&sensor_acquisition))
+		{
+		    /*
+		     * Next:		     *
+		     * - power down accelerometer and gyro;
+		     * - queue the response;
+		     * - change state to STOPPED.
+		     */
+			sensor_sample_buffer_clear(&sensor_sample_buffer);
+			sensor_window_release(&sensor_window);
+			previous_timestamp_us = 0U;
+
+			ism330dhcx_sensor_config_t stopped_config =
+			    running_sensor_config;
+			stopped_config.accel_odr = ISM330DHCX_ACCEL_ODR_PWR_DOWN;
+			stopped_config.gyro_odr = ISM330DHCX_GYRO_ODR_PWR_DOWN;
+
+			const ism330dhcx_status_t stop_status =
+			    ism330dhcx_configure_sensor(
+			        &motion_sensor,
+			        &stopped_config);
+
+			if(stop_status == ISM330DHCX_OK)
+			{
+				acquisition_state = ACQUISITION_STATE_STOPPED;
+			}
+			else
+			{
+				sensor_acquisition_on_error(&sensor_acquisition);
+				acquisition_state = ACQUISITION_STATE_FAULT;
+			}
+
+
+		}
+		else if ((acquisition_state == ACQUISITION_STATE_STOPPING) &&
+		         ((uint32_t)(HAL_GetTick() - stop_started_ms) >=
+		          STOP_DMA_TIMEOUT_MS))
+		{
+		    sensor_sample_buffer_clear(&sensor_sample_buffer);
+		    sensor_window_release(&sensor_window);
+		    previous_timestamp_us = 0U;
+
+		    acquisition_state = ACQUISITION_STATE_FAULT;
+		}
+
+		if (stop_response_pending &&
+		    ((acquisition_state == ACQUISITION_STATE_STOPPED) ||
+		     (acquisition_state == ACQUISITION_STATE_FAULT)))
+		{
+			const control_response_t response =
+			{
+			    .command = pending_stop_request,
+				.success =
+				    (acquisition_state == ACQUISITION_STATE_STOPPED)
+			};
+		    const osStatus_t response_status =
+		          osMessageQueuePut(
+		              control_response_queue_handle,
+		              &response,
+		              0U,
+		              0U);
+
+		    if (response_status == osErrorResource)
+		    {
+		        ++dropped_control_response_count;
+		    }
+		    else if (response_status != osOK)
+		    {
+		        Error_Handler();
+		    }
+		    stop_response_pending = false;
+		}
+
+		if ((acquisition_state == ACQUISITION_STATE_RUNNING) &&
+				sensor_sample_buffer_pop(
 		        &sensor_sample_buffer,
 		        &raw_sample))
 		{
@@ -925,7 +1074,8 @@ void StartDefaultTask(void *argument)
 		}
 
 		//Window consumption
-		if (sensor_window_is_ready(&sensor_window))
+		if ((acquisition_state == ACQUISITION_STATE_RUNNING) &&
+				sensor_window_is_ready(&sensor_window))
 		{
 
 		    if (!sensor_window_calculate_acceleration_features(
@@ -1010,6 +1160,135 @@ void StartDefaultTask(void *argument)
 		        Error_Handler();
 		    }
 		}
+		control_command_t request;
+		const osStatus_t control_status = osMessageQueueGet(
+		      control_command_queue_handle,
+		      &request,
+		      NULL,
+		      0U);
+
+		  if (control_status == osOK)
+		  {
+			  switch(request.command_type)
+			  {
+			  case CONTROL_COMMAND_SET_RATE:
+				  //use request.rate_hz
+				  break;
+
+			  case CONTROL_COMMAND_SET_IMPACT_REFERENCE:
+			  {
+			      const bool success =
+			          condition_monitor_set_impact_reference(
+			              &condition_monitor,
+			              request.impact_reference_mps2);
+
+			      const control_response_t response =
+			      {
+			          .command = request,
+			          .success = success
+			      };
+
+			      const osStatus_t response_status =
+			          osMessageQueuePut(
+			              control_response_queue_handle,
+			              &response,
+			              0U,
+			              0U);
+
+			      if (response_status == osErrorResource)
+			      {
+			          ++dropped_control_response_count;
+			      }
+			      else if (response_status != osOK)
+			      {
+			          Error_Handler();
+			      }
+
+			      break;
+			  }
+			  case CONTROL_COMMAND_GET_IMPACT_REFERENCE:
+			  {
+			      control_response_t response =
+			      {
+			          .command = request,
+			          .success = true
+			      };
+
+			      response.command.impact_reference_mps2 =
+			          condition_monitor_get_impact_reference(
+			              &condition_monitor);
+
+			      const osStatus_t response_status =
+			          osMessageQueuePut(
+			              control_response_queue_handle,
+			              &response,
+			              0U,
+			              0U);
+
+			      if (response_status == osErrorResource)
+			      {
+			          ++dropped_control_response_count;
+			      }
+			      else if (response_status != osOK)
+			      {
+			          Error_Handler();
+			      }
+
+			      break;
+			  }
+
+
+			  case CONTROL_COMMAND_START:
+				  break;
+
+			  case CONTROL_COMMAND_STOP:
+			  {
+			      if (acquisition_state == ACQUISITION_STATE_RUNNING)
+			      {
+			          sensor_acquisition_set_new_reads_enabled(
+			              &sensor_acquisition,
+			              false);
+			          stop_started_ms = HAL_GetTick();
+			          acquisition_state = ACQUISITION_STATE_STOPPING;
+			          pending_stop_request = request;
+			          stop_response_pending = true;
+			      }
+			      else
+			      {
+			    	  const control_response_t response =
+			    	  {
+			    	      .command = request,
+						  .success =
+						      (acquisition_state == ACQUISITION_STATE_STOPPED)
+			    	  };
+				      const osStatus_t response_status =
+				          osMessageQueuePut(
+				              control_response_queue_handle,
+				              &response,
+				              0U,
+				              0U);
+
+				      if (response_status == osErrorResource)
+				      {
+				          ++dropped_control_response_count;
+				      }
+				      else if (response_status != osOK)
+				      {
+				          Error_Handler();
+				      }
+			      }
+
+			      break;
+			  }
+
+			  default:
+				  break;
+			  }
+		  }
+		  else if (control_status != osErrorResource)
+		  {
+		      Error_Handler();
+		  }
 
     osDelay(1U);
   }
@@ -1095,6 +1374,87 @@ void StartTask02(void *argument)
 	  {
 		  Error_Handler();
 	  }
+
+	  control_response_t response;
+
+	  const osStatus_t response_status =
+	      osMessageQueueGet(
+	          control_response_queue_handle,
+	          &response,
+	          NULL,
+	          0U);
+
+	  if (response_status == osOK)
+	  {
+	      /* Inspect response.command.command_type and print the result. */
+		  switch(response.command.command_type)
+		  {
+		  case CONTROL_COMMAND_SET_IMPACT_REFERENCE:
+			    if (response.success)
+			    {
+			        printf(
+			            "Impact reference applied: %.3f m/s^2\r\n",
+			            response.command.impact_reference_mps2);
+			    }
+			    else
+			    {
+			        printf(
+			            "Impact reference rejected: %.3f m/s^2\r\n",
+			            response.command.impact_reference_mps2);
+			    }
+			  break;
+
+		  case CONTROL_COMMAND_GET_IMPACT_REFERENCE:
+		      if (response.success)
+		      {
+		          printf(
+		              "Impact reference: %.3f m/s^2\r\n",
+		              response.command.impact_reference_mps2);
+		      }
+		      else
+		      {
+		          printf("Unable to read impact reference\r\n");
+		      }
+		      break;
+
+		  case CONTROL_COMMAND_SET_RATE:
+			    if (response.success)
+			    {
+			        printf(
+			            "Impact reference applied: %.3f m/s^2\r\n",
+			            response.command.rate_hz);
+			    }
+			    else
+			    {
+			        printf(
+			            "Impact reference rejected: %.3f m/s^2\r\n",
+			            response.command.rate_hz);
+			    }
+			  break;
+
+		  case CONTROL_COMMAND_STOP:
+		      if (response.success)
+		      {
+		          printf("Acquisition stopped\r\n");
+		      }
+		      else
+		      {
+		    	  printf("Stop request rejected or failed\r\n");
+		      }
+		      break;
+
+
+		  default:printf(
+		            "Unsupported Command requested!\r\n");
+
+		  }
+	  }
+	  else if (response_status != osErrorResource)
+	  {
+	      Error_Handler();
+	  }
+
+
 	  const osStatus_t queue_status =
 	      osMessageQueueGet(
 	          telemetry_queue_handle,

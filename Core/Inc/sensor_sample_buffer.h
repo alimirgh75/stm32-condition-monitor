@@ -49,7 +49,8 @@ uint32_t sensor_sample_buffer_get_overrun_count(
     const sensor_sample_buffer_t *buffer);
 
 
-
+void sensor_sample_buffer_clear(
+    sensor_sample_buffer_t *buffer);
 
 
 
