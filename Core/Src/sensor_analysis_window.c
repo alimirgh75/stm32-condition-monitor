@@ -104,6 +104,7 @@ bool sensor_window_calculate_acceleration_features(
 
     float magnitude_squared = 0.0f;
     float max_magnitude_squared = 0.0f;
+    uint32_t max_magnitude_index = 0U;
 
     for(uint32_t i = 0U; i<SENSOR_ANALYSIS_WINDOW_SIZE; i++)
     {
@@ -158,13 +159,15 @@ bool sensor_window_calculate_acceleration_features(
     	if (magnitude_squared > max_magnitude_squared)
     	{
     		max_magnitude_squared = magnitude_squared;
-    		features_output->max_magnitude_index = i;
+            max_magnitude_index = i;
     	}
     }
 
     features_output->max_magnitude_mps2 = sqrtf(max_magnitude_squared);
-
-    features_output->max_magnitude_timestamp_us = input->samples[features_output->max_magnitude_index].timestamp_us;
+    /* A zero-magnitude window uses its first sample as the deterministic peak. */
+    features_output->max_magnitude_index = max_magnitude_index;
+    features_output->max_magnitude_timestamp_us =
+        input->samples[max_magnitude_index].timestamp_us;
 
     rms_x /= SENSOR_ANALYSIS_WINDOW_SIZE;
     rms_y /= SENSOR_ANALYSIS_WINDOW_SIZE;

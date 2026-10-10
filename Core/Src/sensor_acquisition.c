@@ -76,11 +76,21 @@ ism330dhcx_status_t sensor_acquisition_process(
         (acquisition->processed_drdy_event_count !=
          acquisition->drdy_event_count))
     {
+        /* Keep the event count and its timestamp in the same ISR snapshot. */
+        const uint32_t saved_primask = __get_PRIMASK();
+        __disable_irq();
+
         const uint32_t drdy_count =
             acquisition->drdy_event_count;
 
         const uint32_t drdy_timestamp_us =
             acquisition->latest_drdy_timestamp_us;
+
+        /* Publish transfer state before DMA can call back. */
+        acquisition->raw_sample.timestamp_us = drdy_timestamp_us;
+        acquisition->dma_busy = true;
+
+        __set_PRIMASK(saved_primask);
 
         const uint32_t pending_events =
             drdy_count -
@@ -94,11 +104,6 @@ ism330dhcx_status_t sensor_acquisition_process(
 
         if (dma_status == ISM330DHCX_OK)
         {
-            acquisition->raw_sample.timestamp_us =
-                drdy_timestamp_us;
-
-            acquisition->dma_busy = true;
-
             if (pending_events > 1U)
             {
                 acquisition->dropped_sample_count +=
@@ -110,6 +115,8 @@ ism330dhcx_status_t sensor_acquisition_process(
         }
         else
         {
+            /* No transfer was started; keep the DRDY event pending for retry. */
+            acquisition->dma_busy = false;
             return dma_status;
         }
     }

@@ -31,9 +31,7 @@
 #include "condition_monitor.h"
 
 #include "cli.h"
-//#include "cli_output.h"
 #include "control_command.h"
-//#include "uart_console.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -70,7 +68,6 @@ typedef struct
 #define UART_RX_QUEUE_CAPACITY     64U
 #define CONTROL_COMMAND_QUEUE_CAPACITY 2U
 
-#define CONTROL_RESPONSE_TIMEOUT_TICKS 250U
 #define STOP_DMA_TIMEOUT_MS 50U
 
 /* USER CODE END PD */
@@ -156,6 +153,7 @@ static osMessageQueueId_t control_response_queue_handle;
 
 static uint8_t uart_rx_byte;
 static volatile uint32_t uart_rx_dropped_byte_count = 0U;
+static volatile uint32_t uart_rx_error_count = 0U;
 static volatile uint32_t uart_rx_rearm_error_count = 0U;
 static volatile bool uart_rx_restart_required = false;
 /* USER CODE END PV */
@@ -718,6 +716,54 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+static void recover_uart_receive(command_assembler_state_t *assembler)
+{
+    static bool failure_reported = false;
+
+    if (!uart_rx_restart_required)
+    {
+        return;
+    }
+
+    /* Only mask USART2: acquisition interrupts remain available during recovery. */
+    HAL_NVIC_DisableIRQ(USART2_IRQn);
+    HAL_StatusTypeDef status = HAL_UART_AbortReceive(&huart2);
+
+    if (status == HAL_OK)
+    {
+        if (osMessageQueueReset(rx_queue_handle) != osOK)
+        {
+            Error_Handler();
+        }
+
+        command_assembler_init(assembler);
+        /* Ignore the damaged line's suffix until CR/LF restores the boundary. */
+        assembler->discard_mode = true;
+        uart_rx_restart_required = false;
+        status = HAL_UART_Receive_IT(
+            &huart2, &uart_rx_byte, sizeof(uart_rx_byte));
+    }
+
+    if (status != HAL_OK)
+    {
+        ++uart_rx_rearm_error_count;
+        uart_rx_restart_required = true;
+    }
+
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+
+    if (status == HAL_OK)
+    {
+        failure_reported = false;
+        printf("UART RX restarted; press Enter, then retry\r\n");
+    }
+    else if (!failure_reported)
+    {
+        failure_reported = true;
+        printf("UART RX recovery failed; retrying\r\n");
+    }
+}
+
 static void print_status_report(const telemetry_report_t *report)
 {
     if (report == NULL)
@@ -845,6 +891,9 @@ static void print_status_report(const telemetry_report_t *report)
         "Consecutive sensor errors : %lu\r\n"
         "Dropped sensor samples    : %lu\r\n"
         "Dropped telemetry reports : %lu\r\n"
+        "UART receive errors       : %lu\r\n"
+        "UART receive rearm errors : %lu\r\n"
+        "Dropped UART bytes        : %lu\r\n"
         "\r\n"
         "ASSESSMENT\r\n"
         "%s\r\n"
@@ -852,6 +901,9 @@ static void print_status_report(const telemetry_report_t *report)
         (unsigned long)report->consecutive_sensor_errors,
         (unsigned long)report->dropped_sensor_samples,
         (unsigned long)report->dropped_telemetry_reports,
+        (unsigned long)uart_rx_error_count,
+        (unsigned long)uart_rx_rearm_error_count,
+        (unsigned long)uart_rx_dropped_byte_count,
         assessment);
 }
 
@@ -995,6 +1047,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     /* check which USART instance */
 	if (huart->Instance == USART2)
 	{
+        if (uart_rx_restart_required)
+        {
+            return;
+        }
 
 	    //Message put on the queue
 	    const osStatus_t queue_status =
@@ -1006,9 +1062,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 	    if (queue_status == osErrorResource)
 	    {
-	        /* Queue was full. */
+	        /* A missing byte invalidates the entire command, including set values. */
 	        ++uart_rx_dropped_byte_count;
+            uart_rx_restart_required = true;
+            return;
 	    }
+        else if (queue_status != osOK)
+        {
+            Error_Handler();
+        }
 
 		if (HAL_UART_Receive_IT(
 		        huart,
@@ -1021,6 +1083,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		}
 
 	}
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        ++uart_rx_error_count;
+        uart_rx_restart_required = true;
+    }
 }
 
 /* USER CODE END 4 */
@@ -1093,12 +1164,7 @@ void StartDefaultTask(void *argument)
 		if ((acquisition_state == ACQUISITION_STATE_STOPPING) &&
 		    sensor_acquisition_is_quiescent(&sensor_acquisition))
 		{
-		    /*
-		     * Next:		     *
-		     * - power down accelerometer and gyro;
-		     * - queue the response;
-		     * - change state to STOPPED.
-		     */
+            /* Discard partial data before powering down the quiescent sensor. */
 			sensor_sample_buffer_clear(&sensor_sample_buffer);
 			sensor_window_release(&sensor_window);
 			previous_timestamp_us = 0U;
@@ -1526,13 +1592,15 @@ void StartTask02(void *argument)
 	        &uart_rx_byte,
 	        sizeof(uart_rx_byte)) != HAL_OK)
 	{
-	    Error_Handler();
+	    ++uart_rx_rearm_error_count;
+        uart_rx_restart_required = true;
 	}
 	static command_assembler_state_t cli_assember_state;
 	(void)command_assembler_init(&cli_assember_state);
   /* Infinite loop */
   for(;;)
   {
+      recover_uart_receive(&cli_assember_state);
 
 	  const osStatus_t queue_status =
 	      osMessageQueueGet(
@@ -1559,7 +1627,7 @@ void StartTask02(void *argument)
 	      NULL,
 	      1U);
 
-	  if(rx_status == osOK)
+	  if ((rx_status == osOK) && !uart_rx_restart_required)
 	  {
 		  const command_assembler_status_t assembler_status =   command_byte_processing(&cli_assember_state, received_byte);
 
@@ -1586,7 +1654,7 @@ void StartTask02(void *argument)
 			  (void)command_assembler_init(&cli_assember_state);
 			  break;
 		  case COMMAND_IS_DISCARDED:
-			  printf("Command too long \r\n");
+			  printf("Command discarded: too long or UART RX interrupted\r\n");
 			  break;
 
 		  case COMMAND_INVALID_ARGUMENT:
@@ -1598,7 +1666,7 @@ void StartTask02(void *argument)
 		  }
 
 	  }
-	  else if (rx_status != osErrorTimeout)
+	  else if ((rx_status != osOK) && (rx_status != osErrorTimeout))
 	  {
 		  Error_Handler();
 	  }

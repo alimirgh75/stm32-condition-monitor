@@ -5,6 +5,7 @@
  *      Author: alimi
  */
 #include "cli.h"
+#include <stddef.h>
 
 void command_assembler_init(command_assembler_state_t *assembler_state)
 {

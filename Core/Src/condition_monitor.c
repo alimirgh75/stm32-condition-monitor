@@ -119,7 +119,7 @@ bool condition_monitor_update(
             break;
 
         case CONDITION_STATE_ALARM:
-            /* Alarm remains latched until condition_monitor_reset(). */
+            /* Leave ALARM through its lower hysteresis threshold. */
             if (monitor->severity_score <=
                 monitor->config.alarm_exit_score)
             {

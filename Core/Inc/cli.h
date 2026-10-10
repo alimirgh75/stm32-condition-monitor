@@ -4,12 +4,11 @@
  *  Created on: Oct 1, 2026
  *      Author: alimi
  */
-#include "stm32l4xx_hal.h"
-#include <stdbool.h>
-#include <stdint.h>
-
 #ifndef INC_CLI_H_
 #define INC_CLI_H_
+
+#include <stdbool.h>
+#include <stdint.h>
 
 #define UART_COMMAND_MAX_LENGTH    32U
 
