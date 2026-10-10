@@ -20,4 +20,5 @@ Release/
 
 # Operating-system files
 .DS_Store
-Thumbs.dbbuild/
+Thumbs.db
+build/
